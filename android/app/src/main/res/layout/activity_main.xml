@@ -21,9 +21,32 @@
       android:layout_height="wrap_content"
       android:text="加载" />
   </LinearLayout>
-  <WebView
-    android:id="@+id/web"
+  <FrameLayout
     android:layout_width="match_parent"
     android:layout_height="0dp"
-    android:layout_weight="1" />
+    android:layout_weight="1">
+    <WebView
+      android:id="@+id/web"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent" />
+    <FrameLayout
+      android:id="@+id/cast_overlay"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"
+      android:background="#000000"
+      android:visibility="gone">
+      <VideoView
+        android:id="@+id/cast_video"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
+      <Button
+        android:id="@+id/cast_close"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="12dp"
+        android:text="关闭" />
+    </FrameLayout>
+  </FrameLayout>
 </LinearLayout>

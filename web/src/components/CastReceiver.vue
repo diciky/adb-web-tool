@@ -1,7 +1,7 @@
 <template>
   <div class="card">
     <h3>投屏接收端（在电视上运行）</h3>
-    <p class="muted">此页即投屏接收端，应运行在电视/大屏上。手机或电脑打开「投屏发送」页，选择屏幕或摄像头后，本页会经 WebRTC 直接接收并播放（媒体点对点，不经过服务端）。服务端仅做信令中转。</p>
+    <p class="muted">此页即投屏接收端（WebRTC），应运行在电视/大屏上。安卓/PC 的「系统投射(DLNA)」由本应用内置的原生 DLNA 接收端处理（直接在本电视播放，不经过服务端）；本页另支持：手机或电脑打开「投屏发送」页选择屏幕/摄像头，经 WebRTC 点对点推流到本页播放。服务端仅做 WebRTC 信令中转。</p>
     <div class="cast-status">状态：{{ status }}</div>
     <video ref="video" class="cast-video" autoplay playsinline controls></video>
     <div class="row" style="margin-top:8px">
