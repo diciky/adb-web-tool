@@ -19,7 +19,9 @@ RUN cd web && npm install && npm run build
 
 ENV PORT=8877
 ENV DATA_DIR=/data
-VOLUME ["/data"]
+# 注意：不声明 VOLUME。数据持久化由部署方负责（docker-compose 已挂载 ./data:/data，
+# 或 docker run -v <宿主目录>:/data）。若在镜像里声明 VOLUME，没挂载时 Docker 会创建
+# 匿名卷，容器重建后数据看似丢失。
 EXPOSE 8877
 
 CMD ["node", "server/src/index.js"]

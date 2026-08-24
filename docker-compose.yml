@@ -11,6 +11,9 @@ services:
     ports:
       - "${PORT:-8877}:8877"
     volumes:
+      # 数据持久化：宿主文件夹 → 容器 /data（备注/应用缓存/上传/定时任务都在这里）。
+      # ./data 是相对 docker-compose.yml 所在目录；NAS 上建议改成绝对路径，例如：
+      # - /volume1/docker/adb-web-tool/data:/data
       - ./data:/data
     environment:
       - PORT=8877

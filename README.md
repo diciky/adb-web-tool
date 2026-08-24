@@ -63,6 +63,10 @@ docker compose up -d
 
 > 若扫描不到同网段设备（Docker 桥接 NAT 限制），可将 `docker-compose.yml` 中的
 > `network_mode: host` 取消注释（Linux 宿主有效）。
+>
+> 数据持久化：`docker-compose.yml` 已把 `./data`（compose 文件同目录）挂载到容器 `/data`，
+> 设备备注、应用识别缓存、上传文件、定时任务都保存在这里，**重启/重建容器不会丢失**。
+> NAS 上建议把该路径改成绝对路径（如 `/volume1/docker/adb-web-tool/data`）。
 
 ---
 
