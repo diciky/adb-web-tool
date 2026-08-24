@@ -9,3 +9,6 @@ android/release.keystore
 *.log
 server/*.txt
 .DS_Store
+
+apk2_logs/
+
