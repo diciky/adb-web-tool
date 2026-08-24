@@ -44,6 +44,27 @@ async function listApps(serial) {
       metaCached: !!cached,
     });
   }
+
+  // 回填版本号：一次 dumpsys package 批量获取全部版本（不打 APK）。
+  // 已缓存的应用版本写入缓存文件；未缓存的也先挂上版本号，名称/图标等识别时补全。
+  if (apps.some((a) => !a.versionName)) {
+    const vmap = await meta.getVersionsBatch(serial);
+    for (const a of apps) {
+      const v = vmap[a.pkg];
+      if (!v || (!v.versionName && !v.versionCode)) continue;
+      if (a.metaCached) {
+        const updated = meta.fillCachedVersion(serial, a.path, v);
+        if (updated) {
+          a.versionName = updated.versionName || '';
+          a.versionCode = updated.versionCode || '';
+        }
+      } else {
+        a.versionName = v.versionName || '';
+        a.versionCode = v.versionCode || '';
+      }
+    }
+  }
+
   return apps;
 }
 

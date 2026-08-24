@@ -96,10 +96,18 @@ async function getMeta(serial, pkg, apkPath) {
       try { label = Buffer.from(label, 'latin1').toString('utf16le'); } catch (e) {}
     }
     const iconUrl = await parseIcon(app.icon, key);
+    // app-info-parser 常取不到版本号，用 dumpsys 直读已装应用版本兜底
+    let versionName = app.versionName || '';
+    let versionCode = app.versionCode || '';
+    if (!versionName && !versionCode) {
+      const v = await getVersion(serial, pkg);
+      versionName = v.versionName;
+      versionCode = v.versionCode;
+    }
     const meta = {
       name: label && String(label).trim() ? String(label).trim() : pkg,
-      versionName: app.versionName || '',
-      versionCode: app.versionCode || '',
+      versionName,
+      versionCode,
       iconUrl,
       cached: false,
     };
@@ -122,4 +130,61 @@ function peekMeta(serial, apkPath) {
   return null;
 }
 
-module.exports = { getMeta, peekMeta };
+// 从 dumpsys package 批量解析所有已装应用版本（一次 shell 调用，不打 APK）
+async function getVersionsBatch(serial) {
+  try {
+    await adb.ensureServer();
+    const out = await adb.util.readAll(await adb.getDevice(serial).shell('dumpsys package'));
+    const lines = out.toString('utf8').split('\n');
+    const map = {};
+    let cur = null;
+    for (const line of lines) {
+      const pm = line.match(/^\s*Package \[([^\]]+)\]/);
+      if (pm) {
+        cur = pm[1];
+        map[cur] = map[cur] || { versionName: '', versionCode: '' };
+        continue;
+      }
+      if (!cur) continue;
+      const vn = line.match(/versionName=(\S+)/);
+      if (vn && !map[cur].versionName) map[cur].versionName = vn[1];
+      const vc = line.match(/versionCode=(\d+)/);
+      if (vc && !map[cur].versionCode) map[cur].versionCode = vc[1];
+    }
+    return map;
+  } catch (e) {
+    return {};
+  }
+}
+
+// 单个应用版本（dumpsys 直读，不打 APK）；app-info-parser 拿不到版本号时的可靠来源
+async function getVersion(serial, pkg) {
+  try {
+    await adb.ensureServer();
+    const out = await adb.util.readAll(await adb.getDevice(serial).shell(`dumpsys package ${pkg}`));
+    const text = out.toString('utf8');
+    const vn = text.match(/versionName=(\S+)/);
+    const vc = text.match(/versionCode=(\d+)/);
+    return { versionName: vn ? vn[1] : '', versionCode: vc ? vc[1] : '' };
+  } catch (e) {
+    return { versionName: '', versionCode: '' };
+  }
+}
+
+// 回填已有缓存文件的版本字段（无缓存文件则不动，返回 null）
+function fillCachedVersion(serial, apkPath, v) {
+  const key = md5(`${serial}|${apkPath}`);
+  const jsonPath = path.join(config.CACHE_DIR, `${key}.json`);
+  if (!fs.existsSync(jsonPath)) return null;
+  try {
+    const o = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    if (v && v.versionName) o.versionName = v.versionName;
+    if (v && v.versionCode) o.versionCode = v.versionCode;
+    fs.writeFileSync(jsonPath, JSON.stringify(o));
+    return o;
+  } catch (e) {
+    return null;
+  }
+}
+
+module.exports = { getMeta, peekMeta, getVersionsBatch, fillCachedVersion };
