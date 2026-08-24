@@ -32,7 +32,7 @@
         <table>
           <thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th style="width:180px">操作</th></tr></thead>
           <tbody>
-            <tr v-for="it in items" :key="it.name">
+            <tr v-for="it in items" :key="it.name" @dblclick="dbl(it, $event)" style="cursor:pointer">
               <td>
                 <span v-if="it.isDir" style="color:var(--accent)">📁</span>
                 <span v-else>📄</span>
@@ -79,6 +79,11 @@ function enter(name) {
   history.value.push(dir.value);
   dir.value = `${dir.value.replace(/\/$/, '')}/${name}`;
   load();
+}
+// 双击文件夹行进入；双击落在操作按钮上时不触发（避免按钮单击+行双击连进两次）
+function dbl(it, e) {
+  if (e && e.target && e.target.closest && e.target.closest('button')) return;
+  if (it.isDir) enter(it.name);
 }
 function goUp() {
   const parent = dir.value.replace(/\/$/, '').split('/').slice(0, -1).join('/') || '/';
