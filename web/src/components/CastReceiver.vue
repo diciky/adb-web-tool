@@ -58,6 +58,6 @@ openWs();
 </script>
 
 <style scoped>
-.cast-video { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; margin-top: 8px; }
+.cast-video { display: block; width: 100%; max-height: 78vh; object-fit: contain; background: #000; border-radius: 8px; margin: 8px auto 0; }
 .cast-status { margin: 6px 0; }
 </style>

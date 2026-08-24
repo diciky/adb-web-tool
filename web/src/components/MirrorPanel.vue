@@ -397,5 +397,18 @@ onUnmounted(() => { stop(); });
 .mirror-card {
   flex: 1;
   min-width: 320px;
+  text-align: center;
+}
+/* 镜像画面自适应：保留源设备比例（手机竖屏/PC 横屏/平板），
+   按查看设备视口缩放，不溢出、不变形；超高竖屏内容用 max-height 收住 */
+.mirror-img {
+  display: block;
+  max-width: 100%;
+  max-height: 80vh;
+  width: auto;
+  height: auto;
+  margin: 0 auto;
+  background: #000;
+  border-radius: 6px;
 }
 </style>
