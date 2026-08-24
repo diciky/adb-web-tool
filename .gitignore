@@ -4,6 +4,8 @@ web/node_modules/
 web/dist/
 data/
 *.apk
+*.keystore
+android/release.keystore
 *.log
 server/*.txt
 .DS_Store
