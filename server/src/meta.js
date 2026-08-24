@@ -91,6 +91,10 @@ async function getMeta(serial, pkg, apkPath) {
     if (label && typeof label === 'object') {
       label = label.value || label.text || Object.values(label)[0];
     }
+    // 修复 UTF-16LE 宽字符标签被按单字节解码后每个字符间出现的空字节（如 "U\u0000p\u0000g"）
+    if (typeof label === 'string' && label.indexOf('\u0000') !== -1) {
+      try { label = Buffer.from(label, 'latin1').toString('utf16le'); } catch (e) {}
+    }
     const iconUrl = await parseIcon(app.icon, key);
     const meta = {
       name: label && String(label).trim() ? String(label).trim() : pkg,
@@ -106,4 +110,16 @@ async function getMeta(serial, pkg, apkPath) {
   }
 }
 
-module.exports = { getMeta };
+// 仅读取已缓存的元数据（不触发 APK 拉取），用于列表接口直接挂上名称/图标
+function peekMeta(serial, apkPath) {
+  const key = md5(`${serial}|${apkPath}`);
+  const jsonPath = path.join(config.CACHE_DIR, `${key}.json`);
+  if (fs.existsSync(jsonPath)) {
+    try {
+      return JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    } catch (e) {}
+  }
+  return null;
+}
+
+module.exports = { getMeta, peekMeta };

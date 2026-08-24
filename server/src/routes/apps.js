@@ -31,15 +31,17 @@ async function listApps(serial) {
     if (!m) continue;
     const appPath = m[1];
     const pkg = m[2];
+    const cached = meta.peekMeta(serial, appPath);
     apps.push({
       pkg,
       path: appPath,
       type: isSystem(appPath) ? 'system' : 'user',
       disabled: disabled.has(pkg),
-      name: pkg,
-      versionName: '',
-      versionCode: '',
-      iconUrl: null,
+      name: (cached && cached.name) || pkg,
+      versionName: (cached && cached.versionName) || '',
+      versionCode: (cached && cached.versionCode) || '',
+      iconUrl: (cached && cached.iconUrl) || null,
+      metaCached: !!cached,
     });
   }
   return apps;

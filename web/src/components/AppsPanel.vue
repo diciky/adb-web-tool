@@ -7,7 +7,7 @@
           <div class="row">
             <button class="btn" @click="load">刷新列表</button>
             <button class="btn ghost" @click="identifyAll" :disabled="identifying">
-              {{ identifying ? `识别中 ${doneCount}/${apps.length}` : '识别全部名称/图标' }}
+              {{ identifying ? `识别中 ${doneCount}/${total}` : '识别全部名称/图标' }}
             </button>
             <select v-model="filterType">
               <option value="all">全部</option>
@@ -67,6 +67,7 @@ const filterType = ref('all');
 const keyword = ref('');
 const identifying = ref(false);
 const doneCount = ref(0);
+const total = ref(0);
 
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase();
@@ -76,12 +77,13 @@ const filtered = computed(() => {
     return true;
   });
 });
-const pct = computed(() => (apps.value.length ? Math.round((doneCount.value / apps.value.length) * 100) : 0));
+const pct = computed(() => (total.value ? Math.round((doneCount.value / total.value) * 100) : 0));
 
 async function load() {
   if (!store.serial) return;
   try {
     apps.value = await apiGet(`/apps/${encodeURIComponent(store.serial)}`);
+    autoIdentify();
   } catch (e) {
     showToast(e.message);
   }
@@ -94,13 +96,32 @@ async function identifyOne(a) {
     a.versionName = meta.versionName || '';
     a.versionCode = meta.versionCode || '';
     a.iconUrl = meta.iconUrl || null;
+    a.metaCached = true;
   } catch (e) {}
   doneCount.value++;
+}
+
+// 列表已带出缓存的名称/图标；这里只后台识别尚未缓存过的应用，避免每次手动点击
+async function autoIdentify() {
+  const queue = apps.value.filter((a) => !a.metaCached);
+  if (!queue.length) return;
+  identifying.value = true;
+  doneCount.value = 0;
+  total.value = queue.length;
+  const workers = Array.from({ length: 4 }, async () => {
+    while (queue.length) {
+      const a = queue.shift();
+      await identifyOne(a);
+    }
+  });
+  await Promise.all(workers);
+  identifying.value = false;
 }
 
 async function identifyAll() {
   identifying.value = true;
   doneCount.value = 0;
+  total.value = apps.value.length;
   const queue = [...apps.value];
   const workers = Array.from({ length: 4 }, async () => {
     while (queue.length) {
