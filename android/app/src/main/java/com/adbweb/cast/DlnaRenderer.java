@@ -16,6 +16,7 @@ import java.util.Enumeration;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import fi.iki.elonen.IHTTPSession;
 import fi.iki.elonen.NanoHTTPD;
 
 public class DlnaRenderer {
@@ -136,7 +137,7 @@ public class DlnaRenderer {
 
     private void sendNotify(DatagramSocket s) {
         try {
-            byte[] d = notify().getBytes("UTF-8");
+            byte[] d = ssdpNotify().getBytes("UTF-8");
             DatagramPacket p = new DatagramPacket(d, d.length, InetAddress.getByName("239.255.255.250"), 1900);
             s.send(p);
         } catch (IOException e) {
@@ -155,7 +156,7 @@ public class DlnaRenderer {
             "\r\n";
     }
 
-    private String notify() {
+    private String ssdpNotify() {
         return "NOTIFY * HTTP/1.1\r\n" +
             "HOST: 239.255.255.250:1900\r\n" +
             "CACHE-CONTROL: max-age=1800\r\n" +
