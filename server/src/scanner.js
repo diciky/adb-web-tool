@@ -9,6 +9,8 @@ function detectSubnets() {
     for (const iface of ifaces[name]) {
       if (iface.internal) continue;
       if (iface.family !== 'IPv4' && iface.family !== 4) continue;
+      if (iface.address.startsWith('169.254.')) continue;
+      if (iface.address.startsWith('172.')) continue;
       const parts = iface.address.split('.');
       const netBase = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
       subs.add(netBase);
@@ -81,6 +83,7 @@ async function scanSubnet(subnet, ports, bus) {
     workers.push(worker());
   }
   await Promise.all(workers);
+  bus.emit('log', { level: 'info', message: `扫描完成：${subnet} 发现 ${found} 个开放端口` });
   bus.emit('scan_done', { subnet, total: found });
   return found;
 }
@@ -88,10 +91,12 @@ async function scanSubnet(subnet, ports, bus) {
 function startScan(subnet, bus) {
   const target = subnet || detectSubnets()[0];
   if (!target) {
+    bus.emit('log', { level: 'warn', message: '未检测到可用网段，无法扫描' });
     bus.emit('scan_done', { subnet: '', total: 0 });
     return Promise.resolve(0);
   }
   const ports = config.SCAN_PORTS;
+  bus.emit('log', { level: 'info', message: `开始扫描网段 ${target}，端口 ${ports.join(',')}` });
   return scanSubnet(target, ports, bus);
 }
 

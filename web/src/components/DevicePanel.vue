@@ -18,7 +18,7 @@
             <option value="">自动检测网段</option>
             <option v-for="s in subnets" :key="s" :value="s">{{ s }}</option>
           </select>
-          <button class="btn" :disabled="store.scanning" @click="scan">
+          <button class="btn" :disabled="store.scanning" @click="startScan(subnet)">
             {{ store.scanning ? '扫描中...' : '开始扫描' }}
           </button>
         </div>
@@ -53,7 +53,7 @@
       <div class="modal">
         <h3>设备信息</h3>
         <table>
-          <tr v-for="(v, k) in info" :key="k"><th style="width:140px">{{ k }}</th><td>{{ v }}</td></tr>
+          <tr v-for="(v, k) in info" :key="k"><th style="width:140px">{{ infoLabel(k) }}</th><td>{{ v || '—' }}</td></tr>
         </table>
         <div class="row" style="justify-content:flex-end; margin-top:10px">
           <button class="btn" @click="info = null">关闭</button>
@@ -70,11 +70,28 @@ import { apiGet } from '../api';
 
 const host = ref('');
 const port = ref('5555');
+const subnet = ref('');
 const subnets = ref([]);
 const info = ref(null);
 
 function stateText(s) {
   return s === 'device' ? '在线' : s === 'unauthorized' ? '待授权' : s === 'offline' ? '离线' : s;
+}
+
+const INFO_LABELS = {
+  serial: '序列号',
+  brand: '品牌',
+  model: '型号',
+  name: '名称',
+  androidVersion: '安卓版本',
+  sdk: 'SDK 版本',
+  serialno: '设备序列号',
+  ip: 'IP 地址',
+  manufacturer: '制造商',
+  board: '主板',
+};
+function infoLabel(k) {
+  return INFO_LABELS[k] || k;
 }
 
 async function doConnect() {

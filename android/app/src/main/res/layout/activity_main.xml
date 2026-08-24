@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:orientation="vertical"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent">
+  <LinearLayout
+    android:orientation="horizontal"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="8dp">
+    <EditText
+      android:id="@+id/url"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:layout_weight="1"
+      android:hint="服务器地址，如 http://192.168.1.10:8877"
+      android:inputType="textUri" />
+    <Button
+      android:id="@+id/go"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="加载" />
+  </LinearLayout>
+  <WebView
+    android:id="@+id/web"
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1" />
+</LinearLayout>

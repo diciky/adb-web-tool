@@ -15,29 +15,6 @@
     </div>
 
     <div class="card">
-      <h3>遥控器</h3>
-      <p class="muted">模拟 TV 方向键与常用按键</p>
-      <div class="caps" style="margin-bottom:10px">
-        <button class="btn ghost" @click="key(19)">↑</button>
-        <button class="btn ghost" @click="key(82)">菜单</button>
-        <button class="btn ghost" @click="key(3)">主页</button>
-        <button class="btn ghost" @click="key(4)">返回</button>
-        <button class="btn ghost" @click="key(21)">←</button>
-        <button class="btn ghost" @click="key(23)">OK</button>
-        <button class="btn ghost" @click="key(22)">→</button>
-        <button class="btn ghost" @click="key(24)">音量+</button>
-        <button class="btn ghost" @click="key(20)">↓</button>
-        <button class="btn ghost" @click="key(164)">静音</button>
-        <button class="btn ghost" @click="key(25)">音量-</button>
-        <button class="btn ghost" @click="key(26)">电源</button>
-      </div>
-      <div class="row">
-        <button class="btn ghost sm" @click="wake('wake')">唤醒</button>
-        <button class="btn ghost sm" @click="wake('sleep')">熄屏</button>
-      </div>
-    </div>
-
-    <div class="card">
       <h3>文本输入</h3>
       <p class="muted">注：Android 的 input text 不支持中文/非 ASCII，请输英文或拼音。</p>
       <div class="row">

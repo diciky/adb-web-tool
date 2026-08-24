@@ -1,13 +1,53 @@
 const { WebSocketServer } = require('ws');
 const events = require('events');
+const { spawn } = require('child_process');
 const adb = require('./adb');
+const config = require('./config');
 
 const bus = new events.EventEmitter();
 
 const logcatStreams = new Map();
 const shellStreams = new Map();
+const h264Streams = new Map();
+
+function startMirrorH264(ws, serial) {
+  if (ws._h264Key) return;
+  const proc = spawn(config.ADB_BIN, [
+    '-s', serial,
+    'exec-out', 'screenrecord',
+    '--output-format=h264',
+    '--bit-rate', '4000000',
+    '--size', '960x540',
+    '-',
+  ]);
+  ws._h264Key = `h264:${serial}`;
+  proc.stdout.on('data', (buf) => {
+    if (ws.readyState === ws.OPEN) {
+      try { ws.send(buf); } catch (_) {}
+    }
+  });
+  proc.on('error', (err) => {
+    try { ws.send(JSON.stringify({ type: 'mirror_h264_error', message: err.message || 'screenrecord 启动失败' })); } catch (_) {}
+  });
+  proc.on('close', () => {
+    try { ws.send(JSON.stringify({ type: 'mirror_h264_end' })); } catch (_) {}
+  });
+  h264Streams.set(ws._h264Key, proc);
+}
+
+function stopMirrorH264(ws) {
+  if (ws._h264Key) {
+    const proc = h264Streams.get(ws._h264Key);
+    if (proc) {
+      try { proc.kill('SIGKILL'); } catch (_) {}
+      h264Streams.delete(ws._h264Key);
+    }
+    ws._h264Key = null;
+  }
+}
 
 function broadcast(msg) {
+  if (!wss) return;
   const data = JSON.stringify(msg);
   for (const ws of wss.clients) {
     if (ws.readyState === ws.OPEN) {
@@ -26,6 +66,8 @@ function broadcastTo(serial, channel, msg) {
 }
 
 let wss;
+let senderWs = null;
+let receiverWs = null;
 
 function attach(server) {
   wss = new WebSocketServer({ server, path: '/ws' });
@@ -33,6 +75,8 @@ function attach(server) {
   bus.on('task', (msg) => broadcast({ type: 'task', ...msg }));
   bus.on('scan', (msg) => broadcast({ type: 'scan_progress', ...msg }));
   bus.on('scan_done', (msg) => broadcast({ type: 'scan_done', ...msg }));
+  bus.on('log', (msg) => broadcast({ type: 'log', ...msg }));
+  bus.on('cast', (msg) => broadcast({ type: 'cast', ...msg }));
 
   wss.on('connection', (ws) => {
     ws._subs = new Set();
@@ -55,6 +99,9 @@ function attach(server) {
       if (ws._shellProc) {
         try { ws._shellProc.end(); } catch (e) {}
       }
+      if (ws._h264Key) stopMirrorH264(ws);
+      if (ws === senderWs) senderWs = null;
+      if (ws === receiverWs) receiverWs = null;
       delete shellStreams[ws._id];
     });
   });
@@ -69,12 +116,16 @@ async function handleMessage(ws, msg) {
       ws._subs.add(`${msg.channel}:${msg.serial}`);
       if (msg.channel === 'logcat') {
         startLogcat(ws, msg.serial);
+      } else if (msg.channel === 'mirror_h264') {
+        startMirrorH264(ws, msg.serial);
       }
       break;
     case 'unsubscribe':
       ws._subs.delete(`${msg.channel}:${msg.serial}`);
       if (msg.channel === 'logcat') {
         stopLogcat(msg.serial, ws);
+      } else if (msg.channel === 'mirror_h264') {
+        stopMirrorH264(ws);
       }
       break;
     case 'shell':
@@ -83,6 +134,16 @@ async function handleMessage(ws, msg) {
     case 'shell_kill':
       stopShell(ws);
       break;
+    case 'cast_signal': {
+      const from = msg.from;
+      if (from === 'sender') senderWs = ws;
+      else if (from === 'receiver') receiverWs = ws;
+      const target = from === 'sender' ? receiverWs : senderWs;
+      if (target && target !== ws && target.readyState === target.OPEN) {
+        target.send(JSON.stringify(msg));
+      }
+      break;
+    }
     default:
       break;
   }

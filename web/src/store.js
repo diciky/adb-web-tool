@@ -9,6 +9,7 @@ export const store = reactive({
   tasks: {},
   wsReady: false,
   toast: '',
+  logs: [],
 });
 
 let ws = null;
@@ -19,6 +20,10 @@ export function showToast(msg, ms = 2500) {
   setTimeout(() => {
     if (store.toast === msg) store.toast = '';
   }, ms);
+}
+
+export function clearLogs() {
+  store.logs = [];
 }
 
 export async function refreshDevices() {
@@ -82,6 +87,10 @@ function handleMessage(msg) {
       break;
     case 'scan_done':
       store.scanning = false;
+      break;
+    case 'log':
+      store.logs.push({ time: msg.time || Date.now(), level: msg.level || 'info', message: msg.message });
+      if (store.logs.length > 500) store.logs.splice(0, store.logs.length - 500);
       break;
     case 'task':
       store.tasks[msg.id] = {

@@ -8,6 +8,20 @@ const adb = require('./adb');
 const ws = require('./ws');
 const scheduler = require('./scheduler');
 
+const { bus } = require('./ws');
+['log', 'warn', 'error'].forEach((lvl) => {
+  const orig = console[lvl].bind(console);
+  console[lvl] = (...args) => {
+    orig(...args);
+    try {
+      const message = args
+        .map((a) => (typeof a === 'string' ? a : a && a.stack ? a.stack : JSON.stringify(a)))
+        .join(' ');
+      bus.emit('log', { level: lvl, message, time: Date.now() });
+    } catch (e) {}
+  };
+});
+
 for (const dir of [config.DATA_DIR, config.UPLOAD_DIR, config.CACHE_DIR]) {
   fs.mkdirSync(dir, { recursive: true });
 }
@@ -16,6 +30,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+const POLL_PATHS = new Set(['/api/devices', '/api/subnets']);
+app.use((req, res, next) => {
+  const isPoll = req.method === 'GET' && POLL_PATHS.has(req.path);
+  if (!isPoll) {
+    let summary = '';
+    if (req.method !== 'GET' && req.body && typeof req.body === 'object' && Object.keys(req.body).length) {
+      try { summary = ' ' + JSON.stringify(req.body).slice(0, 120); } catch (e) {}
+    }
+    console.log(`[api] ${req.method} ${req.path}${summary}`);
+    res.on('finish', () => {
+      if (res.statusCode >= 400) console.log(`[api] ${req.method} ${req.path} -> ${res.statusCode}`);
+    });
+  }
+  next();
+});
 
 if (config.ACCESS_TOKEN) {
   const check = (req, res, next) => {
@@ -44,6 +74,8 @@ app.use('/api', require('./routes/health'));
 app.use('/api', require('./routes/nettest'));
 app.use('/api', require('./routes/autostart'));
 app.use('/api', require('./routes/batch'));
+
+require('./cast').mount(app);
 
 const dist = path.resolve(__dirname, '..', '..', 'web', 'dist');
 if (fs.existsSync(dist)) {
