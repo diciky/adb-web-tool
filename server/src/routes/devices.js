@@ -1,8 +1,19 @@
 const express = require('express');
 const scanner = require('../scanner');
 const adb = require('../adb');
+const fs = require('fs');
+const path = require('path');
+const config = require('../config');
 
 const router = express.Router();
+
+const REMARKS_FILE = path.join(config.DATA_DIR, 'remarks.json');
+function loadRemarks() {
+  try { return JSON.parse(fs.readFileSync(REMARKS_FILE, 'utf8')); } catch (e) { return {}; }
+}
+function saveRemarks(map) {
+  try { fs.writeFileSync(REMARKS_FILE, JSON.stringify(map, null, 2)); } catch (e) {}
+}
 
 router.get('/subnets', (req, res) => {
   res.json(scanner.detectSubnets());
@@ -50,6 +61,21 @@ router.get('/device/:serial/info', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+router.get('/devices/remarks', (req, res) => {
+  res.json(loadRemarks());
+});
+
+router.post('/devices/remark', (req, res) => {
+  const { serial, remark } = req.body || {};
+  if (!serial) return res.status(400).json({ error: '缺少 serial' });
+  const map = loadRemarks();
+  const text = remark == null ? '' : String(remark).slice(0, 60);
+  if (!text) delete map[serial];
+  else map[serial] = text;
+  saveRemarks(map);
+  res.json({ ok: true, serial, remark: map[serial] || '' });
 });
 
 module.exports = router;

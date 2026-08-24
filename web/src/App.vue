@@ -7,7 +7,7 @@
       <select class="device-select" :value="store.serial" @change="selectDevice($event.target.value)">
         <option value="">未选择设备</option>
         <option v-for="d in store.devices" :key="d.serial" :value="d.serial">
-          {{ d.serial }} ({{ stateText(d.state) }})
+          {{ d.serial }} ({{ stateText(d.state) }}){{ store.remarks[d.serial] ? ' · ' + store.remarks[d.serial] : '' }}
         </option>
       </select>
       <span v-if="store.serial" class="status-dot" :class="'status-' + currentState()"></span>
@@ -41,7 +41,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
-import { store, refreshDevices, selectDevice, connectWS } from './store';
+import { store, refreshDevices, selectDevice, connectWS, loadRemarks } from './store';
 import DevicePanel from './components/DevicePanel.vue';
 import AppsPanel from './components/AppsPanel.vue';
 import InstallPanel from './components/InstallPanel.vue';
@@ -86,6 +86,7 @@ let timer = null;
 onMounted(() => {
   connectWS();
   refreshDevices();
+  loadRemarks();
   timer = setInterval(refreshDevices, 6000);
 });
 onUnmounted(() => { if (timer) clearInterval(timer); });

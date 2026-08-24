@@ -36,15 +36,20 @@
     <div class="card">
       <h3>已连接设备</h3>
       <div v-if="!store.devices.length" class="muted">尚未连接任何设备</div>
-      <div v-for="d in store.devices" :key="d.serial" class="row" style="justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border)">
-        <div class="row">
-          <span class="status-dot" :class="'status-' + d.state"></span>
-          <span>{{ d.serial }}</span>
-          <span class="muted">{{ stateText(d.state) }}</span>
+      <div v-for="d in store.devices" :key="d.serial" style="padding:8px 0; border-bottom:1px solid var(--border)">
+        <div class="row" style="justify-content:space-between">
+          <div class="row">
+            <span class="status-dot" :class="'status-' + d.state"></span>
+            <span>{{ d.serial }}</span>
+            <span class="muted">{{ stateText(d.state) }}</span>
+          </div>
+          <div class="row">
+            <button class="btn ghost sm" @click="showInfo(d.serial)">详情</button>
+            <button class="btn danger sm" @click="disconnect(d.serial)">断开</button>
+          </div>
         </div>
-        <div class="row">
-          <button class="btn ghost sm" @click="showInfo(d.serial)">详情</button>
-          <button class="btn danger sm" @click="disconnect(d.serial)">断开</button>
+        <div class="row" style="margin-top:6px">
+          <input :value="store.remarks[d.serial] || ''" :placeholder="'备注，如：客厅电视'" @change="saveRemark(d.serial, $event.target.value)" style="flex:1; min-width:160px" />
         </div>
       </div>
     </div>
@@ -65,7 +70,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import { store, startScan, connectDevice, disconnectDevice, refreshDevices, showToast } from '../store';
+import { store, startScan, connectDevice, disconnectDevice, refreshDevices, showToast, setRemark } from '../store';
 import { apiGet } from '../api';
 
 const host = ref('');
@@ -103,6 +108,9 @@ async function connect(ip, p) {
 }
 async function disconnect(serial) {
   await disconnectDevice(serial);
+}
+async function saveRemark(serial, text) {
+  await setRemark(serial, text);
 }
 async function showInfo(serial) {
   try {

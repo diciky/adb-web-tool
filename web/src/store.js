@@ -10,6 +10,7 @@ export const store = reactive({
   wsReady: false,
   toast: '',
   logs: [],
+  remarks: {},
 });
 
 let ws = null;
@@ -43,6 +44,21 @@ export async function refreshDevices() {
 
 export function selectDevice(serial) {
   store.serial = serial;
+}
+
+export async function loadRemarks() {
+  try { store.remarks = await apiGet('/devices/remarks'); } catch (e) {}
+}
+
+export async function setRemark(serial, text) {
+  try {
+    const r = await apiPost('/devices/remark', { serial, remark: text });
+    store.remarks = { ...store.remarks, [serial]: r.remark || '' };
+    return true;
+  } catch (e) {
+    showToast('保存备注失败: ' + e.message);
+    return false;
+  }
 }
 
 export async function startScan(subnet) {
