@@ -19,12 +19,18 @@
           <span class="muted">{{ filtered.length }} 个应用</span>
         </div>
         <div v-if="identifying" class="progress" style="margin-top:8px"><span :style="{width: pct + '%'}"></span></div>
+        <div v-if="storage" class="row muted" style="gap:14px;margin-top:8px;flex-wrap:wrap">
+          <span>应用 {{ fmtBytes(storage.appSize) }}</span>
+          <span>数据 {{ fmtBytes(storage.appDataSize) }}</span>
+          <span>缓存 {{ fmtBytes(storage.appCacheSize) }}</span>
+          <span v-if="storage.dataFreeK !== undefined">剩余 {{ fmtBytes(storage.dataFreeK * 1024) }}</span>
+        </div>
       </div>
 
       <div class="card">
         <table>
           <thead>
-            <tr><th>应用</th><th>包名</th><th>版本</th><th>类型</th><th style="width:320px">操作</th></tr>
+            <tr><th>应用</th><th>包名</th><th>版本</th><th>类型</th><th>大小</th><th>缓存</th><th style="width:320px">操作</th></tr>
           </thead>
           <tbody>
             <tr v-for="a in filtered" :key="a.pkg">
@@ -32,6 +38,7 @@
                 <img v-if="a.iconUrl" class="app-icon" :src="a.iconUrl" />
                 <span v-else class="avatar">{{ (a.name || a.pkg)[0].toUpperCase() }}</span>
                 {{ a.name }}
+                <span v-if="a.running" class="run-badge">运行中</span>
                 <span v-if="a.disabled" class="muted">(已停用)</span>
               </td>
               <td class="muted">{{ a.pkg }}</td>
@@ -41,6 +48,8 @@
                   {{ a.type === 'system' ? '系统' : '用户' }}
                 </span>
               </td>
+              <td class="muted">{{ fmtBytes(a.size) }}</td>
+              <td class="muted" :style="{color: a.cacheSize > 100*1024*1024 ? 'var(--red)' : ''}">{{ fmtBytes(a.cacheSize) }}</td>
               <td class="row">
                 <button class="btn sm" @click="launch(a)">启动</button>
                 <button class="btn ghost sm" @click="clearData(a)">清数据</button>
@@ -49,7 +58,7 @@
                 <button class="btn danger sm" @click="uninstall(a)">卸载</button>
               </td>
             </tr>
-            <tr v-if="!filtered.length"><td colspan="5" class="muted">无应用</td></tr>
+            <tr v-if="!filtered.length"><td colspan="7" class="muted">无应用</td></tr>
           </tbody>
         </table>
       </div>
@@ -68,6 +77,7 @@ const keyword = ref('');
 const identifying = ref(false);
 const doneCount = ref(0);
 const total = ref(0);
+const storage = ref(null);
 
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase();
@@ -80,6 +90,23 @@ const filtered = computed(() => {
 const pct = computed(() => (total.value ? Math.round((doneCount.value / total.value) * 100) : 0));
 const uncachedCount = computed(() => apps.value.filter((a) => !a.metaCached).length);
 
+function fmtBytes(n) {
+  if (n === undefined || n === null || isNaN(n)) return '';
+  if (n < 1024) return n + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n;
+  let u = -1;
+  do { v /= 1024; u++; } while (v >= 1024 && u < units.length - 1);
+  return v.toFixed(v >= 100 ? 0 : 1) + ' ' + units[u];
+}
+
+async function loadStorage() {
+  if (!store.serial) return;
+  try {
+    storage.value = await apiGet(`/apps/${encodeURIComponent(store.serial)}/storage`);
+  } catch (e) {}
+}
+
 async function load() {
   if (!store.serial) return;
   try {
@@ -91,6 +118,7 @@ async function load() {
   } catch (e) {
     showToast(e.message);
   }
+  loadStorage();
 }
 
 async function identifyOne(a) {
@@ -173,3 +201,17 @@ async function uninstall(a) {
 watch(() => store.serial, () => load());
 onMounted(() => { if (store.serial) load(); });
 </script>
+
+<style scoped>
+.run-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--green, #16a34a);
+  border: 1px solid var(--green, #16a34a);
+  border-radius: 4px;
+  vertical-align: 1px;
+}
+</style>

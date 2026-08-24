@@ -1,6 +1,7 @@
 const express = require('express');
 const adb = require('../adb');
 const meta = require('../meta');
+const stats = require('../stats');
 
 const router = express.Router();
 
@@ -65,6 +66,25 @@ async function listApps(serial) {
     }
   }
 
+  // 运行状态 + 应用大小/数据/缓存（批量、带缓存；任一失败不影响列表）
+  try {
+    const running = await stats.getRunningBaseSet(serial);
+    for (const a of apps) a.running = !!running.has(a.pkg);
+  } catch (e) {}
+  try {
+    const ds = await stats.getDiskStats(serial);
+    if (ds && ds.map) {
+      for (const a of apps) {
+        const s = ds.map[a.pkg];
+        if (s) {
+          a.size = s.size;
+          a.dataSize = s.dataSize;
+          a.cacheSize = s.cacheSize;
+        }
+      }
+    }
+  } catch (e) {}
+
   return apps;
 }
 
@@ -72,6 +92,16 @@ router.get('/apps/:serial', async (req, res) => {
   try {
     const apps = await listApps(req.params.serial);
     res.json(apps);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 设备存储总量（应用/数据/缓存/剩余空间，来自 dumpsys diskstats，带 6h 缓存）
+router.get('/apps/:serial/storage', async (req, res) => {
+  try {
+    const ds = await stats.getDiskStats(req.params.serial);
+    res.json(ds.totals || {});
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
