@@ -41,23 +41,6 @@
     </div>
 
     <div class="card" style="grid-column: span 3">
-      <div class="row" style="justify-content:space-between">
-        <h3 style="margin:0">实时日志 (Logcat)</h3>
-        <div class="row">
-          <button class="btn sm" v-if="!logging" @click="startLog">开始</button>
-          <button class="btn danger sm" v-else @click="stopLog">停止</button>
-          <button class="btn ghost sm" @click="logLines = []">清空</button>
-        </div>
-      </div>
-      <div style="height:220px; overflow:auto; background:#000; border-radius:8px; padding:8px; margin-top:8px; font-family:monospace; font-size:12px">
-        <div v-for="(l, i) in logLines" :key="i" style="white-space:pre-wrap; color:#9fe">
-          [{{ l.level }}] {{ l.tag }}: {{ l.message }}
-        </div>
-        <div v-if="!logLines.length" class="muted">未开始</div>
-      </div>
-    </div>
-
-    <div class="card" style="grid-column: span 3">
       <h3>Shell 终端</h3>
       <div style="height:220px; overflow:auto; background:#000; border-radius:8px; padding:8px; font-family:monospace; font-size:12px">
         <div v-for="(l, i) in shellLines" :key="i" style="white-space:pre-wrap">{{ l }}</div>
@@ -79,12 +62,9 @@ const screenshot = ref(null);
 const text = ref('');
 const cnText = ref('');
 const clipMethod = ref('');
-const logLines = ref([]);
-const logging = ref(false);
 const shellLines = ref([]);
 const shellInput = ref('');
 let localWs = null;
-let logSerial = '';
 
 function capture() {
   const ts = Date.now();
@@ -126,30 +106,13 @@ function ensureWs() {
   localWs = new WebSocket(`${proto}://${location.host}/ws${token ? '?token=' + token : ''}`);
   localWs.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === 'logcat' && m.serial === logSerial) {
-      logLines.value.push(m.entry);
-      if (logLines.value.length > 500) logLines.value.shift();
-    } else if (m.type === 'shell_out' && m.serial === store.serial) {
+    if (m.type === 'shell_out' && m.serial === store.serial) {
       shellLines.value.push(m.data);
       if (shellLines.value.length > 500) shellLines.value.shift();
-      scrollShell();
     } else if (m.type === 'shell_exit') {
       shellLines.value.push('\r\n[连接已关闭]');
     }
   };
-}
-function scrollShell() {
-  setTimeout(() => {}, 0);
-}
-function startLog() {
-  ensureWs();
-  logSerial = store.serial;
-  sendWS({ type: 'subscribe', channel: 'logcat', serial: store.serial });
-  logging.value = true;
-}
-function stopLog() {
-  if (logSerial) sendWS({ type: 'unsubscribe', channel: 'logcat', serial: logSerial });
-  logging.value = false;
 }
 function sendShell() {
   if (!shellInput.value) return;
@@ -158,6 +121,5 @@ function sendShell() {
   shellInput.value = '';
 }
 
-watch(() => store.serial, () => { if (logging.value) { stopLog(); } });
 onUnmounted(() => { if (localWs) localWs.close(); });
 </script>
