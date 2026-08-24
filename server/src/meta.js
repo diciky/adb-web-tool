@@ -171,6 +171,28 @@ async function getVersion(serial, pkg) {
   }
 }
 
+// 每设备版本映射缓存文件（避免每次加载列表都跑一次 dumpsys package 的 1-6s 延迟）
+function versionsCacheFile(serial) {
+  return path.join(config.CACHE_DIR, `_versions_${md5(serial)}.json`);
+}
+
+// 获取每设备全部应用版本映射：优先读缓存，过期/缺失才重新 dumpsys（默认 12 小时 TTL）
+async function getVersionsMap(serial, maxAgeMs) {
+  maxAgeMs = maxAgeMs || 12 * 60 * 60 * 1000;
+  const f = versionsCacheFile(serial);
+  try {
+    if (fs.existsSync(f)) {
+      const o = JSON.parse(fs.readFileSync(f, 'utf8'));
+      if (o && o.savedAt && Date.now() - o.savedAt < maxAgeMs && o.map) return o.map;
+    }
+  } catch (e) {}
+  const map = await getVersionsBatch(serial);
+  try {
+    fs.writeFileSync(f, JSON.stringify({ savedAt: Date.now(), map }));
+  } catch (e) {}
+  return map;
+}
+
 // 回填已有缓存文件的版本字段（无缓存文件则不动，返回 null）
 function fillCachedVersion(serial, apkPath, v) {
   const key = md5(`${serial}|${apkPath}`);
@@ -187,4 +209,4 @@ function fillCachedVersion(serial, apkPath, v) {
   }
 }
 
-module.exports = { getMeta, peekMeta, getVersionsBatch, fillCachedVersion };
+module.exports = { getMeta, peekMeta, getVersionsBatch, getVersionsMap, fillCachedVersion };

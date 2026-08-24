@@ -7,7 +7,7 @@
           <div class="row">
             <button class="btn" @click="load">刷新列表</button>
             <button class="btn ghost" @click="identifyAll" :disabled="identifying">
-              {{ identifying ? `识别中 ${doneCount}/${total}` : '识别全部名称/图标' }}
+              {{ identifying ? `识别中 ${doneCount}/${total}` : (uncachedCount ? `识别全部名称/图标 (剩余 ${uncachedCount})` : '识别全部名称/图标') }}
             </button>
             <select v-model="filterType">
               <option value="all">全部</option>
@@ -78,12 +78,16 @@ const filtered = computed(() => {
   });
 });
 const pct = computed(() => (total.value ? Math.round((doneCount.value / total.value) * 100) : 0));
+const uncachedCount = computed(() => apps.value.filter((a) => !a.metaCached).length);
 
 async function load() {
   if (!store.serial) return;
   try {
     apps.value = await apiGet(`/apps/${encodeURIComponent(store.serial)}`);
-    autoIdentify();
+    // 仅当未识别应用很少时后台静默补几个；应用多（如 200+）时不再自动识别，
+    // 避免每次进页面都大量拉取 APK，由「识别全部」手动一次性完成（结果持久化）。
+    const uncached = apps.value.filter((a) => !a.metaCached);
+    if (uncached.length && uncached.length <= 10) autoIdentify(uncached);
   } catch (e) {
     showToast(e.message);
   }
@@ -101,13 +105,13 @@ async function identifyOne(a) {
   doneCount.value++;
 }
 
-// 列表已带出缓存的名称/图标；这里只后台识别尚未缓存过的应用，避免每次手动点击
-async function autoIdentify() {
-  const queue = apps.value.filter((a) => !a.metaCached);
-  if (!queue.length) return;
+// 后台小批量识别传入的未缓存应用（已缓存名称由列表接口直接带出）
+async function autoIdentify(list) {
+  if (!list || !list.length) return;
   identifying.value = true;
   doneCount.value = 0;
-  total.value = queue.length;
+  total.value = list.length;
+  const queue = [...list];
   const workers = Array.from({ length: 4 }, async () => {
     while (queue.length) {
       const a = queue.shift();
@@ -118,11 +122,17 @@ async function autoIdentify() {
   identifying.value = false;
 }
 
+// 手动全量识别：只识别尚未缓存的应用（已识别的不重复拉 APK）
 async function identifyAll() {
+  const uncached = apps.value.filter((a) => !a.metaCached);
+  if (!uncached.length) {
+    showToast('所有应用均已识别');
+    return;
+  }
   identifying.value = true;
   doneCount.value = 0;
-  total.value = apps.value.length;
-  const queue = [...apps.value];
+  total.value = uncached.length;
+  const queue = [...uncached];
   const workers = Array.from({ length: 4 }, async () => {
     while (queue.length) {
       const a = queue.shift();

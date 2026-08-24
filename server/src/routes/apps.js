@@ -45,10 +45,10 @@ async function listApps(serial) {
     });
   }
 
-  // 回填版本号：一次 dumpsys package 批量获取全部版本（不打 APK）。
+  // 回填版本号：一次 dumpsys package 批量获取全部版本（不打 APK，结果按设备缓存 12h）。
   // 已缓存的应用版本写入缓存文件；未缓存的也先挂上版本号，名称/图标等识别时补全。
   if (apps.some((a) => !a.versionName)) {
-    const vmap = await meta.getVersionsBatch(serial);
+    const vmap = await meta.getVersionsMap(serial);
     for (const a of apps) {
       const v = vmap[a.pkg];
       if (!v || (!v.versionName && !v.versionCode)) continue;
