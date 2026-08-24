@@ -1,0 +1,103 @@
+:root {
+  --bg: #0f1419;
+  --bg-soft: #1a212b;
+  --bg-card: #222c38;
+  --border: #2f3a47;
+  --text: #e6edf3;
+  --text-dim: #8b98a5;
+  --accent: #3b82f6;
+  --accent-soft: #1d4ed8;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #eab308;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+}
+
+.app { display: flex; flex-direction: column; height: 100%; }
+
+.topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+}
+.topbar .logo { font-weight: 700; font-size: 16px; }
+.topbar .spacer { flex: 1; }
+
+.device-select {
+  background: var(--bg-card); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; min-width: 180px;
+}
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.status-device { background: var(--green); }
+.status-offline { background: var(--red); }
+.status-unauthorized { background: var(--yellow); }
+
+.tabs { display: flex; gap: 4px; padding: 8px 16px 0; background: var(--bg-soft); flex-wrap: wrap; }
+.tab {
+  padding: 8px 16px; border: 1px solid transparent; border-bottom: none;
+  border-radius: 8px 8px 0 0; cursor: pointer; color: var(--text-dim);
+}
+.tab.active { background: var(--bg); color: var(--text); border-color: var(--border); }
+
+.content { flex: 1; overflow: auto; padding: 16px; }
+
+.card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; margin-bottom: 14px;
+}
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.muted { color: var(--text-dim); }
+.btn {
+  background: var(--accent); color: #fff; border: none; border-radius: 8px;
+  padding: 8px 14px; cursor: pointer; font-size: 13px;
+}
+.btn:hover { background: var(--accent-soft); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn.danger { background: var(--red); }
+.btn.sm { padding: 4px 10px; font-size: 12px; }
+
+input, select, textarea {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+}
+input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+th { color: var(--text-dim); font-weight: 600; }
+
+.progress { height: 6px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.progress > span { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: #000; color: #fff; padding: 10px 18px; border-radius: 8px;
+  border: 1px solid var(--border); z-index: 999; max-width: 90%;
+}
+
+.app-icon { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; vertical-align: middle; margin-right: 8px; }
+.avatar { display: inline-flex; width: 28px; height: 28px; border-radius: 6px; background: var(--accent-soft); color: #fff; align-items: center; justify-content: center; margin-right: 8px; font-size: 12px; }
+
+.dropzone { border: 2px dashed var(--border); border-radius: 12px; padding: 30px; text-align: center; color: var(--text-dim); }
+.dropzone.over { border-color: var(--accent); color: var(--text); }
+
+.grid { display: grid; gap: 12px; }
+@media (min-width: 900px) { .grid.cols3 { grid-template-columns: repeat(3, 1fr); } }
+
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 998; }
+.modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; max-width: 92vw; max-height: 92vh; overflow: auto; }
+.modal img { max-width: 100%; max-height: 80vh; }
+
+.caps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; max-width: 320px; }
+.caps button { font-size: 12px; padding: 10px 4px; }

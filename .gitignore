@@ -1,0 +1,9 @@
+node_modules/
+server/node_modules/
+web/node_modules/
+web/dist/
+data/
+*.apk
+*.log
+server/*.txt
+.DS_Store

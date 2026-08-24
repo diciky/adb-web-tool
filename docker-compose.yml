@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  adb-web:
+    build: .
+    image: adb-web-tool
+    container_name: adb-web-tool
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8877}:8877"
+    volumes:
+      - ./data:/data
+    environment:
+      - PORT=8877
+      - DATA_DIR=/data
+      - SCAN_PORTS=${SCAN_PORTS:-5555}
+      - SUBNETS=${SUBNETS:-}
+      - ACCESS_TOKEN=${ACCESS_TOKEN:-}
+      - UPLOAD_MAX_MB=${UPLOAD_MAX_MB:-2048}
+    # 若 NAS 上扫描不到同网段设备（Docker 桥接 NAT 限制），改用宿主网络：
+    # network_mode: host

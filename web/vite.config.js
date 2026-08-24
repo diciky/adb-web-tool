@@ -1,0 +1,17 @@
+import { defineConfig } from 'vite';
+import vue from '@vitejs/plugin-vue';
+
+export default defineConfig({
+  plugins: [vue()],
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': { target: 'http://localhost:8877', changeOrigin: true },
+      '/cache': { target: 'http://localhost:8877', changeOrigin: true },
+      '/ws': { target: 'http://localhost:8877', ws: true },
+    },
+  },
+  build: {
+    outDir: 'dist',
+  },
+});
