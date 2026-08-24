@@ -1,0 +1,74 @@
+﻿2026-08-24T11:42:50.3700486Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-08-24T11:42:50.3706877Z ##[group]Run actions/checkout@v4
+2026-08-24T11:42:50.3707222Z with:
+2026-08-24T11:42:50.3707411Z   repository: diciky/adb-web-tool
+2026-08-24T11:42:50.3709255Z   token: ***
+2026-08-24T11:42:50.3709442Z   ssh-strict: true
+2026-08-24T11:42:50.3709620Z   ssh-user: git
+2026-08-24T11:42:50.3709816Z   persist-credentials: true
+2026-08-24T11:42:50.3710016Z   clean: true
+2026-08-24T11:42:50.3710217Z   sparse-checkout-cone-mode: true
+2026-08-24T11:42:50.3710433Z   fetch-depth: 1
+2026-08-24T11:42:50.3710604Z   fetch-tags: false
+2026-08-24T11:42:50.3710788Z   show-progress: true
+2026-08-24T11:42:50.3710977Z   lfs: false
+2026-08-24T11:42:50.3711134Z   submodules: false
+2026-08-24T11:42:50.3711356Z   set-safe-directory: true
+2026-08-24T11:42:50.3711565Z   allow-unsafe-pr-checkout: false
+2026-08-24T11:42:50.3711899Z ##[endgroup]
+2026-08-24T11:42:50.4513071Z Syncing repository: diciky/adb-web-tool
+2026-08-24T11:42:50.4514899Z ##[group]Getting Git version info
+2026-08-24T11:42:50.4515438Z Working directory is '/home/runner/work/adb-web-tool/adb-web-tool'
+2026-08-24T11:42:50.4516229Z [command]/usr/bin/git version
+2026-08-24T11:42:50.4534588Z git version 2.55.0
+2026-08-24T11:42:50.4581595Z ##[endgroup]
+2026-08-24T11:42:50.4593001Z Temporarily overriding HOME='/home/runner/work/_temp/7e9d1683-2d5c-4f37-a235-8e25668404e8' before making global git config changes
+2026-08-24T11:42:50.4594297Z Adding repository directory to the temporary git global config as a safe directory
+2026-08-24T11:42:50.4596954Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/adb-web-tool/adb-web-tool
+2026-08-24T11:42:50.4640412Z Deleting the contents of '/home/runner/work/adb-web-tool/adb-web-tool'
+2026-08-24T11:42:50.4643325Z ##[group]Initializing the repository
+2026-08-24T11:42:50.4647667Z [command]/usr/bin/git init /home/runner/work/adb-web-tool/adb-web-tool
+2026-08-24T11:42:50.4714399Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-08-24T11:42:50.4715600Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-08-24T11:42:50.4716509Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-08-24T11:42:50.4717055Z hint: call:
+2026-08-24T11:42:50.4717304Z hint:
+2026-08-24T11:42:50.4717651Z hint: 	git config --global init.defaultBranch <name>
+2026-08-24T11:42:50.4718063Z hint:
+2026-08-24T11:42:50.4718456Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-08-24T11:42:50.4719078Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-08-24T11:42:50.4719570Z hint:
+2026-08-24T11:42:50.4719830Z hint: 	git branch -m <name>
+2026-08-24T11:42:50.4720118Z hint:
+2026-08-24T11:42:50.4720561Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-08-24T11:42:50.4721317Z Initialized empty Git repository in /home/runner/work/adb-web-tool/adb-web-tool/.git/
+2026-08-24T11:42:50.4733533Z [command]/usr/bin/git remote add origin https://github.com/diciky/adb-web-tool
+2026-08-24T11:42:50.4762670Z ##[endgroup]
+2026-08-24T11:42:50.4763194Z ##[group]Disabling automatic garbage collection
+2026-08-24T11:42:50.4766175Z [command]/usr/bin/git config --local gc.auto 0
+2026-08-24T11:42:50.4790849Z ##[endgroup]
+2026-08-24T11:42:50.4791340Z ##[group]Setting up auth
+2026-08-24T11:42:50.4796311Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-08-24T11:42:50.4821899Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-08-24T11:42:50.5114679Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-08-24T11:42:50.5147349Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-08-24T11:42:50.5352596Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-24T11:42:50.5382923Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-08-24T11:42:50.5572288Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-08-24T11:42:50.5604372Z ##[endgroup]
+2026-08-24T11:42:50.5604866Z ##[group]Fetching the repository
+2026-08-24T11:42:50.5613486Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +a47ff513044cd222670e9c47ab795f545288417b:refs/remotes/origin/main
+2026-08-24T11:42:51.0905657Z From https://github.com/diciky/adb-web-tool
+2026-08-24T11:42:51.0906184Z  * [new ref]         a47ff513044cd222670e9c47ab795f545288417b -> origin/main
+2026-08-24T11:42:51.0909092Z ##[endgroup]
+2026-08-24T11:42:51.0909421Z ##[group]Determining the checkout info
+2026-08-24T11:42:51.0911021Z ##[endgroup]
+2026-08-24T11:42:51.0916300Z [command]/usr/bin/git sparse-checkout disable
+2026-08-24T11:42:51.0956388Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-08-24T11:42:51.0982660Z ##[group]Checking out the ref
+2026-08-24T11:42:51.0986248Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-08-24T11:42:51.1070100Z Switched to a new branch 'main'
+2026-08-24T11:42:51.1074030Z branch 'main' set up to track 'origin/main'.
+2026-08-24T11:42:51.1082781Z ##[endgroup]
+2026-08-24T11:42:51.1114020Z [command]/usr/bin/git log -1 --format=%H
+2026-08-24T11:42:51.1136441Z a47ff513044cd222670e9c47ab795f545288417b

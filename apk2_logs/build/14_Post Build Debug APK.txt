@@ -1,0 +1,37 @@
+﻿2026-08-24T11:43:55.4761887Z Post job cleanup.
+2026-08-24T11:43:55.4765131Z ##[start-action display=Setup Gradle;id=__5dea5eee-3514-4066-8722-e1008e2ef7b2.setup-gradle]
+2026-08-24T11:43:55.4811556Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-08-24T11:43:55.4812467Z Post job cleanup.
+2026-08-24T11:43:55.6311549Z ##[warning]This job uses deprecated functionality from the 'gradle/gradle-build-action' action. Consult the Job Summary for more details.
+2026-08-24T11:43:55.6313259Z DEPRECATION: The action `gradle/gradle-build-action` has been replaced by `gradle/actions/setup-gradle`. See https://github.com/gradle/actions/blob/main/docs/deprecation-upgrade-guide.md#the-action-gradlegradle-build-action-has-been-replaced-by-gradleactionssetup-gradle
+2026-08-24T11:43:55.6315555Z DEPRECATION: Using the action to execute Gradle via the `arguments` parameter is deprecated. See https://github.com/gradle/actions/blob/main/docs/deprecation-upgrade-guide.md#using-the-action-to-execute-gradle-via-the-arguments-parameter-is-deprecated
+2026-08-24T11:43:55.6316407Z In post-action step
+2026-08-24T11:43:55.6317320Z Stopping all Gradle daemons before saving Gradle User Home state
+2026-08-24T11:43:55.6317870Z Stopping Gradle daemons for /home/runner/gradle-installations/installs/gradle-8.9
+2026-08-24T11:43:55.6327512Z (node:2842) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-08-24T11:43:55.6328203Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-08-24T11:43:55.6331762Z [command]/home/runner/gradle-installations/installs/gradle-8.9/bin/gradle --stop
+2026-08-24T11:43:56.1505476Z Stopping Daemon(s)
+2026-08-24T11:43:56.1506195Z 1 Daemon stopped
+2026-08-24T11:43:56.1644995Z ##[group]Caching Gradle state
+2026-08-24T11:43:56.2779782Z Caching dependencies with path '/home/runner/.gradle/caches/modules-*/files-*/*/*/*/*' and cache key: gradle-dependencies-v1-803086f12aa6aeec24fc4ff43c314cc5
+2026-08-24T11:43:56.2881420Z Caching instrumented-jars with path '/home/runner/.gradle/caches/jars-*/*/' and cache key: gradle-instrumented-jars-v1-209b36b2fd637eaf366af28a6ccccb6c
+2026-08-24T11:43:56.2995930Z Caching groovy-dsl with path '/home/runner/.gradle/caches/*/groovy-dsl/*/' and cache key: gradle-groovy-dsl-v1-dc98aee2e93d660ec477c746d4aac199
+2026-08-24T11:43:56.3027236Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/adb-web-tool/adb-web-tool --files-from manifest.txt --use-compress-program zstdmt
+2026-08-24T11:43:56.3409066Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/adb-web-tool/adb-web-tool --files-from manifest.txt --use-compress-program zstdmt
+2026-08-24T11:43:56.3664776Z ##[warning]Failed to save cache entry with path '/home/runner/.gradle/caches/jars-*/*/' and key: gradle-instrumented-jars-v1-209b36b2fd637eaf366af28a6ccccb6c: Error: <h2>Our services aren't available right now</h2><p>We're working to restore all services as soon as possible. Please check back soon.</p>0fC6MagAAAADusT2beymARLsCDwqd98J7UEhYMzFFREdFMDUxNQBFZGdl
+2026-08-24T11:43:56.4037256Z ##[warning]Failed to save cache entry with path '/home/runner/.gradle/caches/*/groovy-dsl/*/' and key: gradle-groovy-dsl-v1-dc98aee2e93d660ec477c746d4aac199: Error: <h2>Our services aren't available right now</h2><p>We're working to restore all services as soon as possible. Please check back soon.</p>0fC6MagAAAADBJodWARMeSoTMVYT0gePjUEhYMzFFREdFMDUxNgBFZGdl
+2026-08-24T11:43:56.4932116Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/adb-web-tool/adb-web-tool --files-from manifest.txt --use-compress-program zstdmt
+2026-08-24T11:43:56.5060159Z Caching transforms with path '/home/runner/.gradle/caches/transforms-4/*/
+2026-08-24T11:43:56.5062777Z /home/runner/.gradle/caches/*/transforms/*/' and cache key: gradle-transforms-v1-5df9e2d45e91c3caec3c842cc4c94a92
+2026-08-24T11:43:56.7156600Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/adb-web-tool/adb-web-tool --files-from manifest.txt --use-compress-program zstdmt
+2026-08-24T11:43:56.7658427Z ##[warning]Failed to save cache entry with path '/home/runner/.gradle/caches/modules-*/files-*/*/*/*/*' and key: gradle-dependencies-v1-803086f12aa6aeec24fc4ff43c314cc5: Error: <h2>Our services aren't available right now</h2><p>We're working to restore all services as soon as possible. Please check back soon.</p>0fC6MagAAAABNp2AWVFXPTa4TyW3W0Xl6UEhYMzFFREdFMDIxNwBFZGdl
+2026-08-24T11:43:57.1622953Z ##[warning]Failed to save cache entry with path '/home/runner/.gradle/caches/transforms-4/*/
+/home/runner/.gradle/caches/*/transforms/*/' and key: gradle-transforms-v1-5df9e2d45e91c3caec3c842cc4c94a92: Error: <h2>Our services aren't available right now</h2><p>We're working to restore all services as soon as possible. Please check back soon.</p>0fS6MagAAAABRE4ceCIEHQaA+d9HykC+RUEhYMzFFREdFMDIxNwBFZGdl
+2026-08-24T11:43:57.2937078Z Caching Gradle User Home with cache key: gradle-home-v1|Linux|build[620c74083efa5b88ef904c2356f72d31]-a47ff513044cd222670e9c47ab795f545288417b
+2026-08-24T11:43:57.3011660Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/adb-web-tool/adb-web-tool --files-from manifest.txt --use-compress-program zstdmt
+2026-08-24T11:43:57.3682136Z ##[warning]Failed to save cache entry with path '/home/runner/.gradle/caches,/home/runner/.gradle/notifications,/home/runner/.gradle/.setup-gradle' and key: gradle-home-v1|Linux|build[620c74083efa5b88ef904c2356f72d31]-a47ff513044cd222670e9c47ab795f545288417b: Error: <h2>Our services aren't available right now</h2><p>We're working to restore all services as soon as possible. Please check back soon.</p>0fS6MagAAAABv29KcB6dcSrWNsEydx9RFUEhYMzFFREdFMDUxNgBFZGdl
+2026-08-24T11:43:57.3691260Z ##[endgroup]
+2026-08-24T11:43:57.3691759Z Generating Job Summary
+2026-08-24T11:43:57.3696876Z Completed post-action step
+2026-08-24T11:43:57.3797310Z ##[end-action id=__5dea5eee-3514-4066-8722-e1008e2ef7b2.setup-gradle;outcome=success;conclusion=success;duration_ms=1903]

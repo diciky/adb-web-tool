@@ -5,15 +5,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-env:
-  KEYSTORE_FILE: ${{ runner.temp }}/release.jks
-  KEYSTORE_PASSWORD: adbweb
-  KEY_ALIAS: adbweb
-  KEY_PASSWORD: adbweb
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_PASSWORD: adbweb
+      KEY_ALIAS: adbweb
+      KEY_PASSWORD: adbweb
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,7 +32,7 @@ jobs:
         run: sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
       - name: Generate release keystore
-        run: keytool -genkeypair -v -keystore "$KEYSTORE_FILE" -keyalg RSA -keysize 2048 -validity 10000 -alias adbweb -storepass adbweb -keypass adbweb -dname "CN=adbweb, OU=adbweb, O=adbweb, C=CN"
+        run: keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" -keyalg RSA -keysize 2048 -validity 10000 -alias adbweb -storepass adbweb -keypass adbweb -dname "CN=adbweb, OU=adbweb, O=adbweb, C=CN"
 
       - name: Build Debug and Release APK
         uses: gradle/gradle-build-action@v3
@@ -42,6 +40,8 @@ jobs:
           build-root-directory: android
           gradle-version: '8.9'
           arguments: assembleDebug assembleRelease
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
