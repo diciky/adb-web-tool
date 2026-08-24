@@ -2,8 +2,10 @@ version: '3.8'
 
 services:
   adb-web:
-    build: .
-    image: adb-web-tool
+    # 默认从 Docker Hub 拉取已发布的镜像（推送到 main 后 CI 会自动更新）
+    image: diciky/adb-web-tool:latest
+    # 如需本地构建（改代码后立刻生效），注释掉上面 image 行，取消下面 build 行：
+    # build: .
     container_name: adb-web-tool
     restart: unless-stopped
     ports:

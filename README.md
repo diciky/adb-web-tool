@@ -54,8 +54,9 @@
 cp .env.example .env
 # 编辑 .env：设置 ACCESS_TOKEN（建议）、SCAN_PORTS、SUBNETS 等
 
-# 2. 构建并启动
-docker compose up -d --build
+# 2. 拉取镜像并启动（默认从 Docker Hub 拉取 diciky/adb-web-tool:latest）
+docker compose up -d
+# 如需本地构建（改代码后立即生效）：先注释掉 docker-compose.yml 的 image 行、取消 build 行，再执行 docker compose up -d --build
 
 # 浏览器访问 http://<NAS_IP>:8877
 ```
