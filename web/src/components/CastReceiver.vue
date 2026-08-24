@@ -1,8 +1,8 @@
 <template>
   <div class="card">
-    <h3>投屏接收端</h3>
-    <p class="muted">在安卓TV/电脑浏览器打开本页即用。安卓与部分PC可用系统原生「投屏/投射」发现「{{ friendly }}」并推送视频；iOS 或不支持 DLNA 时，用「投屏发送」页经 WebRTC 实时传屏。</p>
-    <div class="cast-status">状态：{{ status }}<span v-if="title"> · {{ title }}</span></div>
+    <h3>投屏接收端（在电视上运行）</h3>
+    <p class="muted">此页即投屏接收端，应运行在电视/大屏上。手机或电脑打开「投屏发送」页，选择屏幕或摄像头后，本页会经 WebRTC 直接接收并播放（媒体点对点，不经过服务端）。服务端仅做信令中转。</p>
+    <div class="cast-status">状态：{{ status }}</div>
     <video ref="video" class="cast-video" autoplay playsinline controls></video>
     <div class="row" style="margin-top:8px">
       <button class="btn ghost sm" @click="stopAll">停止</button>
@@ -14,10 +14,8 @@
 import { ref, onUnmounted } from 'vue';
 import { showToast } from '../store';
 
-const friendly = 'ADB Web 投屏';
 const video = ref(null);
-const status = ref('等待投屏…');
-const title = ref('');
+const status = ref('等待投屏（请在手机/电脑打开「投屏发送」）…');
 let ws = null;
 let pc = null;
 const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -31,24 +29,9 @@ function openWs() {
   ws.onopen = () => { sendMsg({ type: 'cast_signal', from: 'receiver' }); };
   ws.onmessage = (e) => {
     let m; try { m = JSON.parse(e.data); } catch (_) { return; }
-    if (m.type === 'cast') onCast(m);
-    else if (m.type === 'cast_signal') onSignal(m);
+    if (m.type === 'cast_signal') onSignal(m);
   };
   ws.onclose = () => { status.value = '连接断开'; };
-}
-function onCast(m) {
-  const v = video.value;
-  if (m.kind === 'cast_uri') {
-    title.value = m.title || '';
-    status.value = '接收中';
-    if (v) { if (pc) { try { pc.close(); } catch (_) {} pc = null; } v.srcObject = null; v.src = m.uri; v.play().catch(() => {}); }
-  } else if (m.kind === 'cast_play') {
-    status.value = '播放中'; if (v) v.play().catch(() => {});
-  } else if (m.kind === 'cast_pause') {
-    status.value = '暂停'; if (v) v.pause();
-  } else if (m.kind === 'cast_stop') {
-    status.value = '空闲'; if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
-  }
 }
 function onSignal(m) {
   const d = m.data || {};

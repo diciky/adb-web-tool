@@ -75,8 +75,6 @@ app.use('/api', require('./routes/nettest'));
 app.use('/api', require('./routes/autostart'));
 app.use('/api', require('./routes/batch'));
 
-require('./cast').mount(app);
-
 const dist = path.resolve(__dirname, '..', '..', 'web', 'dist');
 if (fs.existsSync(dist)) {
   app.use(express.static(dist));

@@ -76,7 +76,6 @@ function attach(server) {
   bus.on('scan', (msg) => broadcast({ type: 'scan_progress', ...msg }));
   bus.on('scan_done', (msg) => broadcast({ type: 'scan_done', ...msg }));
   bus.on('log', (msg) => broadcast({ type: 'log', ...msg }));
-  bus.on('cast', (msg) => broadcast({ type: 'cast', ...msg }));
 
   wss.on('connection', (ws) => {
     ws._subs = new Set();
