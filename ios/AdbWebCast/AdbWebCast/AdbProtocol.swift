@@ -9,6 +9,8 @@ import Darwin
 extension Notification.Name {
     /// 首次 ADB 授权：App 已把签名发给电视，提示用户在电视上勾选「始终允许」并点 OK。
     static let adbAuthorizationRequired = Notification.Name("adbAuthorizationRequired")
+    /// 连接/握手各阶段文字，用于把进度实时推到 UI，避免"始终正在连接"无反馈。
+    static let adbConnectionStage = Notification.Name("adbConnectionStage")
 }
 
 enum AdbCmd {
@@ -149,12 +151,25 @@ final class AdbSocket {
     func receiveExact(_ count: Int) throws -> Data {
         var out = Data()
         out.reserveCapacity(count)
+        let budgetMs = max(1000, readTimeoutSeconds * 1000)
         while out.count < count {
+            // 用 poll 做硬超时：真机上 SO_RCVTIMEO 可能被半开连接/信号影响而失效，
+            // poll 能保证任何一次读都有确定上限，绝不出现"永久正在连接"。
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, Int32(budgetMs)) }
+            if ready == 0 { throw AdbError.ioError("读取超时(\(readTimeoutSeconds)s)") }
+            if ready < 0 {
+                if errno == EINTR { continue }
+                throw AdbError.ioError("读取被中断")
+            }
             let need = count - out.count
             var buf = [UInt8](repeating: 0, count: need)
-            let n = buf.withUnsafeMutableBytes { raw -> Int in recv(fd, raw.baseAddress, need, 0) }
-            if n == 0 { remoteClosed = true; closeSocket() }
-            if n <= 0 { throw AdbError.ioError("读取超时或连接中断") }
+            let n = buf.withUnsafeMutableBytes { recv(fd, $0.baseAddress, need, 0) }
+            if n == 0 { remoteClosed = true; closeSocket(); throw AdbError.ioError("电视已断开连接") }
+            if n < 0 {
+                if errno == EINTR || errno == EAGAIN { continue }
+                throw AdbError.ioError("读取失败(errno=\(errno))")
+            }
             out.append(contentsOf: buf[0..<n])
         }
         return out
@@ -228,9 +243,10 @@ final class AdbClient {
         // 设备变更或旧连接已断 → 重建连接并握手
         Self.sharedSocket.closeSocket()
         do {
+            postStage("正在连接电视 \(host):\(port)…")
             try Self.sharedSocket.connect(host: host, port: port)
-            // 握手阶段要给用户在电视上点「OK」留出充足时间，不能沿用普通命令的短超时
-            Self.sharedSocket.setReadTimeout(90)
+            // 握手阶段要给用户在电视上点「OK」留出时间；配合 poll 硬超时保证有上限
+            Self.sharedSocket.setReadTimeout(40)
             try handshake()
             Self.connectedKey = key
         } catch {
@@ -240,38 +256,52 @@ final class AdbClient {
     }
 
     private func handshake() throws {
+        postStage("正在与电视握手…")
         let cnxn = AdbMessage(command: AdbCmd.cnxn, arg0: AdbCmd.version,
                               arg1: AdbCmd.maxData, data: AdbCmd.connectPayload.data(using: .utf8)!)
         try socket.sendMessage(cnxn)
         var repliedSignature = false
         var repliedPublicKey = false
-        // 已授权设备握手毫秒级完成；首次人工授权给 60 秒在电视上勾选并点 OK
-        let deadline = Date().addingTimeInterval(60)
+        let deadline = Date().addingTimeInterval(90)
         while Date() < deadline {
             let reply = try socket.receiveMessage()
-            if reply.command == AdbCmd.cnxn { return }
+            if reply.command == AdbCmd.cnxn {
+                postStage("授权成功，正在读取设备信息…")
+                return
+            }
             if reply.command == AdbCmd.auth && reply.arg0 == 1 {
                 let token = reply.data
+                guard token.count == 20 else {
+                    throw AdbError.handshakeFailed("授权令牌长度异常(\(token.count))")
+                }
                 if !repliedSignature, let key = AdbKeys.privateKey {
                     var error: Unmanaged<CFError>?
-                    // ADB 把 20 字节 token 当作「已算好的 SHA1 摘要」，用 Digest 变体。
-                    if let sig = SecKeyCreateSignature(key, .rsaSignatureDigestPKCS1v15SHA1, token as CFData, &error) {
-                        try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 2, arg1: 0, data: sig as Data))
-                        repliedSignature = true
-                        NotificationCenter.default.post(name: .adbAuthorizationRequired, object: nil)
-                        continue
+                    // ADB 把 20 字节 token 当作「已算好的 SHA1 摘要」，用 Digest 变体签名。
+                    guard let sig = SecKeyCreateSignature(key, .rsaSignatureDigestPKCS1v15SHA1, token as CFData, &error) else {
+                        let d = (error?.takeRetainedValue() as Error?).localizedDescription ?? "未知错误"
+                        throw AdbError.handshakeFailed("RSA 签名失败：\(d)")
                     }
+                    try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 2, arg1: 0, data: sig as Data))
+                    repliedSignature = true
+                    postStage("已发送签名，等待电视确认…")
+                    NotificationCenter.default.post(name: .adbAuthorizationRequired, object: nil)
+                    continue
                 }
                 if !repliedPublicKey, let pub = AdbKeys.publicBlob {
                     try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 3, arg1: 0, data: pub))
                     repliedPublicKey = true
+                    postStage("请在电视勾选「一律允许」并点 OK…")
                     continue
                 }
-                throw AdbError.handshakeFailed("无法完成鉴权，请在电视上确认授权提示")
+                throw AdbError.handshakeFailed("电视未接受授权，请在电视勾选「一律允许」后重试")
             }
             throw AdbError.handshakeFailed("收到未知帧 0x\(String(reply.command, radix: 16))")
         }
         throw AdbError.handshakeFailed("握手超时（请在电视上确认授权提示）")
+    }
+
+    private func postStage(_ text: String) {
+        NotificationCenter.default.post(name: .adbConnectionStage, object: text)
     }
 
     private func open(_ destination: String) throws -> (UInt32, UInt32) {
