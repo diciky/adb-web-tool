@@ -1,0 +1,81 @@
+name: Build IPA (unsigned)
+
+# 在 GitHub 托管的 macOS runner 上把 iOS 壳编译成未签名 IPA。
+# 未签名 IPA 不需要 Apple 开发者账号 / 证书 / 描述文件，
+# 用 Sideloadly / AltStore / 爱思助手等自签后即可安装。
+# 触发：push 到 main/master、手动、或推送 v* 标签（发布到 Release）。
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SCHEME: AdbWebCast
+  PROJECT: ios/AdbWebCast/AdbWebCast.xcodeproj
+  IPA_NAME: AdbWebCast-ios16.ipa
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: 静态校验 iOS 工程
+        run: node ios/scripts/check-ios-project.mjs
+
+      - name: 归档（无签名）
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -archivePath "$RUNNER_TEMP/AdbWebCast.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive
+
+      - name: 组装未签名 IPA
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/AdbWebCast.xcarchive/Products/Applications/AdbWebCast.app"
+          test -d "$APP" || { echo "找不到 $APP"; exit 1; }
+          STAGE="$RUNNER_TEMP/ipa"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/Payload"
+          cp -R "$APP" "$STAGE/Payload/"
+          (cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/$IPA_NAME" Payload)
+          echo "IPA 已生成: $(ls -lh "$GITHUB_WORKSPACE/$IPA_NAME")"
+          file "$GITHUB_WORKSPACE/$IPA_NAME"
+
+      - name: 上传 IPA（Artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: adbtv-ios-unsigned
+          path: ${{ env.IPA_NAME }}
+          if-no-files-found: error
+
+      - name: 发布到 Release（仅 v* 标签）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: iOS 客户端 ${{ github.ref_name }}
+          body: |
+            未签名 IPA，需用 Sideloadly / AltStore / 爱思助手自签后安装。
+            安装后在顶部输入框填写服务地址，例如 http://192.168.1.10:8877
+          files: ${{ env.IPA_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
