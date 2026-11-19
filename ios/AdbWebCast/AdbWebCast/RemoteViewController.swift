@@ -132,7 +132,6 @@ final class RemoteViewController: UIViewController {
             b.addTarget(self, action: #selector(keyUp), for: .touchUpOutside)
             b.addTarget(self, action: #selector(keyUp), for: .touchCancel)
         }
-        _ = repeat // 连发由 repeatable 集合按 keycode 判定，参数保留以兼容调用点
         return b
     }
 
