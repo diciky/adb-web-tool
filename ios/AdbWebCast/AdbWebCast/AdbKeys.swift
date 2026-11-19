@@ -44,13 +44,13 @@ enum AdbKeys {
     }
 
     /// ADB AUTH type=3 的 publickey payload。
-    /// 协议要求 payload 是「base64(RSAPublicKey struct) 文本 + '\0' + user@host 注释」，
-    /// 而不是解码后的裸 struct：adbd/framework 按文本处理，遇到 0x00 会被截断成空串
-    /// （表现为电视弹框指纹是 MD5("") 的 d41d8cd9…，勾选「一律允许」也无法保存，每次重弹）。
+    /// 协议要求 payload 是「base64(RSAPublicKey struct) 文本 + '\0'」——与 adb 官方
+    /// send_auth_publickey 完全一致（注释仅存在于 adb_keys 文件格式，发送时不带）。
+    /// 之前发的是解码后的裸 struct：adbd 按 C 字符串处理，第 2 个字节 0x00 直接截断成
+    /// 空串（电视弹框指纹为 MD5("") 的 d41d8cd9…，勾选「一律允许」也存不进去，每次重弹）。
     static var publicBlob: Data? {
         var payload = Data(ADB_PUB_B64.utf8)   // base64 文本本身即 payload 主体
-        payload.append(0)                      // '\0' 终止
-        payload.append(Data("adbtv@ios".utf8)) // 注释（adbkit auth.js 正则支持 "b64\0 comment"）
+        payload.append(0)                      // '\0' 终止（adbd 按 C 字符串读取，正好保留 base64 部分）
         return payload
     }
 }
