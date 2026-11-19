@@ -245,8 +245,8 @@ final class AdbClient {
         try socket.sendMessage(cnxn)
         var repliedSignature = false
         var repliedPublicKey = false
-        // 首次授权需要用户在电视上勾选「始终允许」并点 OK，留足 150 秒，避免误判网络超时
-        let deadline = Date().addingTimeInterval(150)
+        // 已授权设备握手毫秒级完成；首次人工授权给 60 秒在电视上勾选并点 OK
+        let deadline = Date().addingTimeInterval(60)
         while Date() < deadline {
             let reply = try socket.receiveMessage()
             if reply.command == AdbCmd.cnxn { return }
@@ -302,10 +302,13 @@ final class AdbClient {
 
     /// 读取属于某通道的下一个 WRTE 数据帧：跳过对方回的传输层 OKAY；收到 WRTE 回 OKAY；CLSE 表示结束。
     private func receiveStreamData(local: UInt32, remote: UInt32) throws -> Data? {
+        var idleFrames = 0
         while true {
             let msg = try socket.receiveMessage()
             if msg.command == AdbCmd.okay {
                 // 对方确认我们发出的 WRTE，无需再回，跳过
+                idleFrames += 1
+                if idleFrames > 64 { throw AdbError.protocolError("通道收到过多 OKAY 帧（流控异常）") }
                 continue
             } else if msg.command == AdbCmd.wrte {
                 try socket.sendMessage(AdbMessage(command: AdbCmd.okay, arg0: local, arg1: remote, data: Data()))
@@ -316,6 +319,9 @@ final class AdbClient {
                 return nil
             } else if msg.command == AdbCmd.fail {
                 throw AdbError.commandFailed(String(data: msg.data, encoding: .utf8) ?? "命令失败")
+            } else {
+                idleFrames += 1
+                if idleFrames > 64 { throw AdbError.protocolError("通道收到过多无关帧（流控异常）") }
             }
         }
     }
