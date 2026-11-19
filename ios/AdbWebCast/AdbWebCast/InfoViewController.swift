@@ -49,15 +49,16 @@ final class InfoViewController: UIViewController {
             guard let self else { return }
             let client = AdbClient()
             var d = DeviceInfo()
+            var errMsg = ""
             do {
                 try client.connect(host: self.host.ip, port: self.host.port)
                 d = client.readDeviceInfo()
                 d.ip = self.host.ip
-                client.disconnect()
                 // 连上即记住设备与型号，下次无需重新扫描。
                 if !d.model.isEmpty { DeviceStore.remember(ip: self.host.ip, port: self.host.port, name: d.model) }
             } catch {
-                client.disconnect()
+                client.invalidate()
+                errMsg = error.localizedDescription
             }
             let rows: [(String, String)] = [
                 ("型号", d.model.isEmpty ? self.deviceModel : d.model),
@@ -71,7 +72,9 @@ final class InfoViewController: UIViewController {
                 self.info = d
                 self.rows = rows
                 self.statusLabel.text = d.model.isEmpty
-                    ? "⚠️ 未能读取数据，请确认电视已授权 ADB 调试后下拉刷新"
+                    ? (errMsg.isEmpty
+                        ? "⚠️ 未能读取数据，请确认电视已授权 ADB 调试后下拉刷新"
+                        : "⚠️ \(errMsg)（下拉刷新重试）")
                     : "已连接 · 下拉刷新"
                 self.tableView.reloadData()
                 self.refresh.endRefreshing()
