@@ -25,6 +25,15 @@ const required = [
   'AdbWebCast/AdbWebCast/LanScanner.swift',
   'AdbWebCast/AdbWebCast/DeviceListViewController.swift',
   'AdbWebCast/AdbWebCast/InstallViewController.swift',
+  'AdbWebCast/AdbWebCast/Models.swift',
+  'AdbWebCast/AdbWebCast/UIHelpers.swift',
+  'AdbWebCast/AdbWebCast/DeviceHomeViewController.swift',
+  'AdbWebCast/AdbWebCast/InfoViewController.swift',
+  'AdbWebCast/AdbWebCast/AppsViewController.swift',
+  'AdbWebCast/AdbWebCast/FilesViewController.swift',
+  'AdbWebCast/AdbWebCast/AutostartViewController.swift',
+  'AdbWebCast/AdbWebCast/BatchViewController.swift',
+  'AdbWebCast/AdbWebCast/ToolsViewController.swift',
   'AdbWebCast/AdbWebCast/Info.plist',
   'AdbWebCast/AdbWebCast/LaunchScreen.storyboard',
   'AdbWebCast/AdbWebCast.xcodeproj/project.pbxproj',
@@ -69,6 +78,12 @@ const protoMust = [
   ['"SEND"', 'sync SEND'],
   ['"DATA"', 'sync DATA'],
   ['"DONE"', 'sync DONE'],
+  ['"LIST"', 'sync LIST（列目录）'],
+  ['"RECV"', 'sync RECV（下载）'],
+  ['func pull', 'sync pull 下载能力'],
+  ['func listDir', 'sync listDir 列目录能力'],
+  ['func screenshot', 'screenshot 截图能力'],
+  ['receiveStreamData', '跳过传输层 OKAY 的流读取'],
   ['pm install -r', 'install 命令'],
 ];
 for (const [needle, desc] of protoMust) {
@@ -87,10 +102,14 @@ if (!failed) ok('内置 ADB 鉴权密钥齐全');
 
 // ---------- 局域网自适应扫描 ----------
 const lan = readFileSync(join(swiftDir, 'LanScanner.swift'), 'utf8');
-for (const needle of ['getifaddrs', 'localInterfaces', 'inet_pton', 'scanLocalNetwork', '5555']) {
+for (const needle of ['getifaddrs', 'localInterfaces', 'inet_pton', 'scanLocalNetwork', '5555',
+                       'AdbProbe.verify', 'singleIPs', 'utun', 'pdp_ip']) {
   if (!lan.includes(needle)) fail(`LanScanner.swift 缺少 ${needle}`);
 }
-if (!failed) ok('局域网扫描（本机 IP + /24 + 5555 探测）齐全');
+if (readFileSync(join(swiftDir, 'AdbProtocol.swift'), 'utf8').includes('enum AdbProbe')) {
+  ok('ADB 握手探测（过滤 VPN 伪开放端口）齐全');
+} else fail('缺少 AdbProbe 握手探测');
+if (!failed) ok('局域网扫描（自动/手动网段/IP 直连 + 5555 探测）齐全');
 
 // ---------- AppDelegate 根控制器 ----------
 const app = readFileSync(join(swiftDir, 'AppDelegate.swift'), 'utf8');
@@ -137,7 +156,10 @@ if (!/rootObject = \w+/.test(pbxText)) fail('project.pbxproj 缺少 rootObject')
 const braces = (pbxText.match(/{/g) || []).length - (pbxText.match(/}/g) || []).length;
 if (braces !== 0) fail(`project.pbxproj 括号不平衡（差 ${braces}）`);
 for (const f of ['AppDelegate.swift', 'AdbKeys.swift', 'AdbProtocol.swift', 'LanScanner.swift',
-                 'DeviceListViewController.swift', 'InstallViewController.swift', 'Info.plist']) {
+                 'DeviceListViewController.swift', 'InstallViewController.swift', 'Models.swift',
+                 'UIHelpers.swift', 'DeviceHomeViewController.swift', 'InfoViewController.swift',
+                 'AppsViewController.swift', 'FilesViewController.swift', 'AutostartViewController.swift',
+                 'BatchViewController.swift', 'ToolsViewController.swift', 'Info.plist']) {
   if (!pbxText.includes(f)) fail(`project.pbxproj 没有引用 ${f}`);
 }
 if (!failed) ok('project.pbxproj 结构完整且引用全部源码');

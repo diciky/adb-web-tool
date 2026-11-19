@@ -14,6 +14,15 @@
 		AA0000000000000000000006 /* DeviceListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000009 /* DeviceListViewController.swift */; };
 		AA0000000000000000000007 /* InstallViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000000A /* InstallViewController.swift */; };
 		AA0000000000000000000003 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* LaunchScreen.storyboard */; };
+		AA0000000000000000000010 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000010 /* Models.swift */; };
+		AA0000000000000000000011 /* UIHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000011 /* UIHelpers.swift */; };
+		AA0000000000000000000012 /* DeviceHomeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000012 /* DeviceHomeViewController.swift */; };
+		AA0000000000000000000013 /* InfoViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000013 /* InfoViewController.swift */; };
+		AA0000000000000000000014 /* AppsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000014 /* AppsViewController.swift */; };
+		AA0000000000000000000015 /* FilesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* FilesViewController.swift */; };
+		AA0000000000000000000016 /* AutostartViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* AutostartViewController.swift */; };
+		AA0000000000000000000017 /* BatchViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* BatchViewController.swift */; };
+		AA0000000000000000000018 /* ToolsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000018 /* ToolsViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -26,6 +35,15 @@
 		BB0000000000000000000008 /* LanScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanScanner.swift; sourceTree = "<group>"; };
 		BB0000000000000000000009 /* DeviceListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListViewController.swift; sourceTree = "<group>"; };
 		BB000000000000000000000A /* InstallViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000010 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		BB0000000000000000000011 /* UIHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIHelpers.swift; sourceTree = "<group>"; };
+		BB0000000000000000000012 /* DeviceHomeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceHomeViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000013 /* InfoViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfoViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000014 /* AppsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000015 /* FilesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilesViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000016 /* AutostartViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutostartViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000017 /* BatchViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000018 /* ToolsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolsViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +74,15 @@
 				BB0000000000000000000008 /* LanScanner.swift */,
 				BB0000000000000000000009 /* DeviceListViewController.swift */,
 				BB000000000000000000000A /* InstallViewController.swift */,
+				BB0000000000000000000010 /* Models.swift */,
+				BB0000000000000000000011 /* UIHelpers.swift */,
+				BB0000000000000000000012 /* DeviceHomeViewController.swift */,
+				BB0000000000000000000013 /* InfoViewController.swift */,
+				BB0000000000000000000014 /* AppsViewController.swift */,
+				BB0000000000000000000015 /* FilesViewController.swift */,
+				BB0000000000000000000016 /* AutostartViewController.swift */,
+				BB0000000000000000000017 /* BatchViewController.swift */,
+				BB0000000000000000000018 /* ToolsViewController.swift */,
 				BB0000000000000000000003 /* LaunchScreen.storyboard */,
 				BB0000000000000000000004 /* Info.plist */,
 			);
@@ -145,6 +172,15 @@
 				AA0000000000000000000005 /* LanScanner.swift in Sources */,
 				AA0000000000000000000006 /* DeviceListViewController.swift in Sources */,
 				AA0000000000000000000007 /* InstallViewController.swift in Sources */,
+				AA0000000000000000000010 /* Models.swift in Sources */,
+				AA0000000000000000000011 /* UIHelpers.swift in Sources */,
+				AA0000000000000000000012 /* DeviceHomeViewController.swift in Sources */,
+				AA0000000000000000000013 /* InfoViewController.swift in Sources */,
+				AA0000000000000000000014 /* AppsViewController.swift in Sources */,
+				AA0000000000000000000015 /* FilesViewController.swift in Sources */,
+				AA0000000000000000000016 /* AutostartViewController.swift in Sources */,
+				AA0000000000000000000017 /* BatchViewController.swift in Sources */,
+				AA0000000000000000000018 /* ToolsViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -200,7 +236,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdbWebCast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -208,7 +244,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cool.cnb.adbweb.console;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -222,7 +258,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdbWebCast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -230,7 +266,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cool.cnb.adbweb.console;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

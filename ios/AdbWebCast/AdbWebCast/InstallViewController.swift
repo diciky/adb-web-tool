@@ -165,10 +165,6 @@ final class InstallViewController: UIViewController {
     }
 }
 
-extension String {
-    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
-}
-
 // MARK: - UIDocumentPickerDelegate
 extension InstallViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {

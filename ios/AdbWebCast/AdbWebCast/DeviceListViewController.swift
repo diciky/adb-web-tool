@@ -1,82 +1,68 @@
 import UIKit
 
-/// 第一屏：显示本机网段、扫描开关,以及扫描到的 ADB 设备列表。
+/// 第一屏：三种设备发现方式（自动扫描 / 手动网段 / IP 直连）+ 设备列表
 final class DeviceListViewController: UIViewController {
 
-    private var hosts: [AdbHost: String] = [:]   // host -> 设备型号（型号异步回填）
+    private var hosts: [AdbHost: String] = [:]   // host -> 设备型号（异步回填）
     private var interfaces: [LocalInterface] = []
     private var scanning = false
-    private var scanToken = 0                    // 防止旧扫描结果落到新一轮
+    private var scanToken = 0
 
     private let titleLabel: UILabel = {
-        let l = UILabel()
-        l.text = "ADB 电视助手"
-        l.font = .boldSystemFont(ofSize: 22)
-        return l
+        let l = UILabel(); l.text = "ADB 电视助手"; l.font = .boldSystemFont(ofSize: 22); return l
     }()
     private let subtitleLabel: UILabel = {
-        let l = UILabel()
-        l.font = .systemFont(ofSize: 13)
-        l.textColor = .secondaryLabel
-        l.numberOfLines = 0
-        l.text = "适配当前 WiFi / 热点网段，自动发现局域网内的 ADB 电视"
-        return l
+        let l = UILabel(); l.font = .systemFont(ofSize: 13); l.textColor = .secondaryLabel
+        l.numberOfLines = 0; l.text = "自动扫描 / 手动网段 / IP 直连，发现局域网内的 ADB 电视"; return l
     }()
     private let netLabel: UILabel = {
-        let l = UILabel()
-        l.font = .systemFont(ofSize: 12)
-        l.textColor = .secondaryLabel
-        l.numberOfLines = 0
-        return l
+        let l = UILabel(); l.font = .systemFont(ofSize: 12); l.textColor = .secondaryLabel
+        l.numberOfLines = 0; return l
     }()
-    private let scanButton: UIButton = {
-        let b = UIButton(type: .system)
-        b.setTitle("扫描局域网", for: .normal)
-        b.titleLabel?.font = .boldSystemFont(ofSize: 15)
-        b.backgroundColor = UIColor.systemBlue
-        b.setTitleColor(.white, for: .normal)
-        b.layer.cornerRadius = 10
-        b.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        return b
-    }()
+    private let autoButton: UIButton = DeviceListViewController.makeButton("自动扫描本机网段", .systemBlue)
+    private let manualButton: UIButton = DeviceListViewController.makeButton("手动输入网段", .systemTeal)
+    private let directButton: UIButton = DeviceListViewController.makeButton("输入电视 IP 直连", .systemPurple)
+
     private lazy var tableView: UITableView = {
         let t = UITableView(frame: .zero, style: .insetGrouped)
         t.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
-        t.dataSource = self
-        t.delegate = self
-        t.translatesAutoresizingMaskIntoConstraints = false
+        t.dataSource = self; t.delegate = self; t.translatesAutoresizingMaskIntoConstraints = false
         return t
     }()
     private let refresh = UIRefreshControl()
     private let emptyLabel: UILabel = {
-        let l = UILabel()
-        l.text = "尚未发现设备\n点击「扫描局域网」开始"
-        l.textColor = .tertiaryLabel
-        l.textAlignment = .center
-        l.numberOfLines = 0
-        l.font = .systemFont(ofSize: 15)
-        return l
+        let l = UILabel(); l.text = "尚未发现设备\n用上方任一方式开始发现"
+        l.textColor = .tertiaryLabel; l.textAlignment = .center; l.numberOfLines = 0
+        l.font = .systemFont(ofSize: 15); return l
     }()
+
+    private static func makeButton(_ title: String, _ color: UIColor) -> UIButton {
+        let b = UIButton(type: .system)
+        b.setTitle(title, for: .normal)
+        b.titleLabel?.font = .boldSystemFont(ofSize: 14)
+        b.backgroundColor = color
+        b.setTitleColor(.white, for: .normal)
+        b.layer.cornerRadius = 9
+        b.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        return b
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
         buildUI()
         refreshNetworkInfo()
-        startScan()
     }
 
     private func buildUI() {
-        let header = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel, netLabel, scanButton])
-        header.axis = .vertical
-        header.spacing = 8
-        header.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(header)
-        view.addSubview(tableView)
+        let header = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel, netLabel, autoButton, manualButton, directButton])
+        header.axis = .vertical; header.spacing = 8; header.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(header); view.addSubview(tableView)
         tableView.refreshControl = refresh
-        refresh.addTarget(self, action: #selector(startScan), for: .valueChanged)
-        scanButton.addTarget(self, action: #selector(startScan), for: .touchUpInside)
-
+        refresh.addTarget(self, action: #selector(autoScan), for: .valueChanged)
+        autoButton.addTarget(self, action: #selector(autoScan), for: .touchUpInside)
+        manualButton.addTarget(self, action: #selector(manualSubnet), for: .touchUpInside)
+        directButton.addTarget(self, action: #selector(directIP), for: .touchUpInside)
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
@@ -91,14 +77,52 @@ final class DeviceListViewController: UIViewController {
     private func refreshNetworkInfo() {
         interfaces = LanScanner.localInterfaces()
         if interfaces.isEmpty {
-            netLabel.text = "⚠️ 未检测到本机 IP，请确认已连接 WiFi 或开启热点"
+            netLabel.text = "⚠️ 未检测到本机 WiFi/以太网 IP（已自动忽略 VPN/蜂窝网卡）。可直接用「手动网段」或「IP 直连」。"
         } else {
-            let lines = interfaces.map { "• \($0.name)  \($0.ip)  掩码 \($0.netmask)" }
-            netLabel.text = "本机接口：\n" + lines.joined(separator: "\n")
+            let lines = interfaces.map { "• \($0.name)  \($0.ip)" }
+            netLabel.text = "本机网卡：\n" + lines.joined(separator: "\n")
         }
     }
 
-    @objc private func startScan() {
+    // MARK: 三种发现方式
+
+    @objc private func autoScan() {
+        guard !scanning else { return }
+        refreshNetworkInfo()
+        let bases = interfaces.compactMap { LanScanner.subnetBase(of: $0.ip) }
+        if bases.isEmpty {
+            UIKitHelper.alert("无法自动扫描", "未检测到可用的本机网卡 IP，请用「手动输入网段」或「IP 直连」。", in: self)
+            refresh.endRefreshing()
+            return
+        }
+        startScan(bases: bases, singleIPs: [], label: "自动扫描")
+    }
+
+    @objc private func manualSubnet() {
+        UIKitHelper.input("输入要扫描的网段", placeholder: "例如 10.10.10", in: self) { [weak self] text in
+            guard let self else { return }
+            let base = text.trimmingCharacters(in: .whitespaces)
+            // 支持用户输入完整 IP 或 10.10.10.0/24 形式，提取前三段
+            let candidates = base.split(separator: ".").compactMap { Int($0) }
+            guard candidates.count >= 3, candidates.prefix(3).allSatisfy({ $0 >= 0 && $0 <= 255 }) else {
+                UIKitHelper.alert("网段格式不对", "请输入形如 10.10.10 的前三段。", in: self); return
+            }
+            self.startScan(bases: ["\(candidates[0]).\(candidates[1]).\(candidates[2])"], singleIPs: [], label: "网段 \(base)")
+        }
+    }
+
+    @objc private func directIP() {
+        UIKitHelper.input("输入电视 IP", placeholder: "例如 10.10.10.121", in: self) { [weak self] text in
+            guard let self else { return }
+            let ip = text.trimmingCharacters(in: .whitespaces)
+            guard LanScanner.validIPv4(ip) else {
+                UIKitHelper.alert("IP 格式不对", "请输入形如 10.10.10.121 的合法 IPv4 地址。", in: self); return
+            }
+            self.startScan(bases: [], singleIPs: [ip], label: "直连 \(ip)")
+        }
+    }
+
+    private func startScan(bases: [String], singleIPs: [String], label: String) {
         guard !scanning else { return }
         scanning = true
         scanToken += 1
@@ -106,12 +130,10 @@ final class DeviceListViewController: UIViewController {
         hosts.removeAll()
         tableView.reloadData()
         updateEmpty()
-        scanButton.setTitle("扫描中…", for: .normal)
-        scanButton.isEnabled = false
-        scanButton.alpha = 0.6
-        refreshNetworkInfo()
-
-        LanScanner.scanLocalNetwork { [weak self] host in
+        autoButton.setTitle("扫描中…（\(label)）", for: .normal)
+        autoButton.isEnabled = false
+        autoButton.alpha = 0.6
+        LanScanner.scan(bases: bases, singleIPs: singleIPs) { [weak self] host in
             guard let self, self.scanToken == token else { return }
             if self.hosts[host] == nil {
                 self.hosts[host] = ""
@@ -119,18 +141,21 @@ final class DeviceListViewController: UIViewController {
                 self.updateEmpty()
                 self.fetchModel(for: host, token: token)
             }
-        } onDone: { [weak self] _, _ in
+        } onDone: { [weak self] _ in
             guard let self, self.scanToken == token else { return }
             self.scanning = false
-            self.scanButton.setTitle("重新扫描", for: .normal)
-            self.scanButton.isEnabled = true
-            self.scanButton.alpha = 1
+            self.autoButton.setTitle("自动扫描本机网段", for: .normal)
+            self.autoButton.isEnabled = true
+            self.autoButton.alpha = 1
             self.refresh.endRefreshing()
             self.updateEmpty()
+            if self.hosts.isEmpty {
+                UIKitHelper.alert("未发现设备", "确认：①电视已开启 ADB 调试且端口 5555 开放；②手机与电视在同一网段（或 IP 直连填对）；③首次连接需在电视上点「允许」。", in: self)
+            }
         }
     }
 
-    /// 连接设备读取型号，回填到列表（只读操作，失败静默）
+    /// 连接设备读取型号，回填列表（只读，失败静默）
     private func fetchModel(for host: AdbHost, token: Int) {
         DispatchQueue.global(qos: .utility).async {
             let client = AdbClient()
@@ -144,36 +169,19 @@ final class DeviceListViewController: UIViewController {
                     self.hosts[host] = model
                     self.tableView.reloadData()
                 }
-            } catch {
-                client.disconnect()
-            }
+            } catch { client.disconnect() }
         }
     }
 
-    private func updateEmpty() {
-        if hosts.isEmpty {
-            tableView.backgroundView = emptyLabel
-        } else {
-            tableView.backgroundView = nil
-        }
-    }
-
-    private func alert(_ title: String, _ msg: String) {
-        let c = UIAlertController(title: title, message: msg, preferredStyle: .alert)
-        c.addAction(UIAlertAction(title: "好", style: .default))
-        present(c, animated: true)
-    }
+    private func updateEmpty() { tableView.backgroundView = hosts.isEmpty ? emptyLabel : nil }
 }
 
 // MARK: - UITableView
 extension DeviceListViewController: UITableViewDataSource, UITableViewDelegate {
-
     func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { hosts.count }
-
     func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
-        hosts.isEmpty ? nil : "发现 \(hosts.count) 台设备（点击安装 APK）"
+        hosts.isEmpty ? nil : "发现 \(hosts.count) 台设备（点击进入功能面板）"
     }
-
     func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
         let host = Array(hosts.keys)[indexPath.row]
@@ -185,11 +193,10 @@ extension DeviceListViewController: UITableViewDataSource, UITableViewDelegate {
         cell.accessoryType = .disclosureIndicator
         return cell
     }
-
     func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
         tv.deselectRow(at: indexPath, animated: true)
         let host = Array(hosts.keys)[indexPath.row]
-        let vc = InstallViewController(host: host, deviceModel: hosts[host] ?? "")
+        let vc = DeviceHomeViewController(host: host, deviceModel: hosts[host] ?? "")
         navigationController?.pushViewController(vc, animated: true)
     }
 }
