@@ -76,8 +76,9 @@ const infoPlist = mustExist('AdbWebCast/AdbWebCast/Info.plist');
 const pbxText = readFileSync(join(proj, 'AdbWebCast.xcodeproj/project.pbxproj'), 'utf8');
 const targets = [...pbxText.matchAll(/IPHONEOS_DEPLOYMENT_TARGET = ([\d.]+);/g)].map((m) => m[1]);
 if (!targets.length) fail('project.pbxproj 没有设置 IPHONEOS_DEPLOYMENT_TARGET');
-else if (targets.some((t) => t !== '16.0')) fail(`工程最低版本应统一为 16.0，实际 ${[...new Set(targets)].join(' / ')}`);
-else ok('IPHONEOS_DEPLOYMENT_TARGET = 16.0');
+else if (new Set(targets).size !== 1) fail(`IPHONEOS_DEPLOYMENT_TARGET 各 target 不一致：${[...new Set(targets)].join(' / ')}`);
+else if (parseFloat(targets[0]) < 18.4) fail(`部署目标 ${targets[0]} 过低：Xcode 26 SDK 的文件选择 API 要求 iOS 18.4+`);
+else ok(`IPHONEOS_DEPLOYMENT_TARGET = ${targets[0]}（各 target 一致，满足文件选择 API 要求）`);
 
 for (const [key, want] of [
   ['NSAppTransportSecurity', '(dict)'],
