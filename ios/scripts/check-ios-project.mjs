@@ -117,6 +117,13 @@ const targets = [...pbxText.matchAll(/IPHONEOS_DEPLOYMENT_TARGET = ([\d.]+);/g)]
 if (!targets.length) fail('project.pbxproj 没有设置 IPHONEOS_DEPLOYMENT_TARGET');
 else if (new Set(targets).size !== 1) fail(`IPHONEOS_DEPLOYMENT_TARGET 各 target 不一致：${[...new Set(targets)].join(' / ')}`);
 else ok(`IPHONEOS_DEPLOYMENT_TARGET = ${targets[0]}（各 target 一致）`);
+// 保护：部署目标不允许高于 16.0，否则 iOS 16.6.1 等设备会「无法打开」。
+for (const t of targets) {
+  const [maj = 0, min = 0] = t.split('.').map(Number);
+  if (maj > 16 || (maj === 16 && min > 0)) {
+    fail(`IPHONEOS_DEPLOYMENT_TARGET = ${t} 过高；为兼容 iOS 16.6.1 必须 ≤ 16.0`);
+  }
+}
 
 for (const key of ['NSAppTransportSecurity', 'NSLocalNetworkUsageDescription', 'UILaunchStoryboardName']) {
   if (readKey(infoPlist, key) === null) fail(`Info.plist 缺少 ${key}`);
