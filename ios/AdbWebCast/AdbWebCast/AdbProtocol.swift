@@ -6,6 +6,11 @@ import Darwin
 #endif
 
 // MARK: - ADB 传输层常量（little-endian 32 位命令字）
+extension Notification.Name {
+    /// 首次 ADB 授权：App 已把签名发给电视，提示用户在电视上勾选「始终允许」并点 OK。
+    static let adbAuthorizationRequired = Notification.Name("adbAuthorizationRequired")
+}
+
 enum AdbCmd {
     // 4 个 ASCII 字符按 little-endian 读成 uint32（与 dadb / adbd 一致）
     static let cnxn: UInt32 = 0x4e584e43 // "CNXN"
@@ -85,9 +90,13 @@ extension Data {
 final class AdbSocket {
     private var fd: Int32 = -1
     var readTimeoutSeconds: Int = 20
+    /// 共享连接是否被对端关闭（read()==0）。用于长连接复用前的健康检查。
+    private(set) var remoteClosed = false
+    var isValid: Bool { fd >= 0 && !remoteClosed }
     deinit { closeSocket() }
 
     func connect(host: String, port: UInt16, timeout: TimeInterval = 6) throws {
+        remoteClosed = false
         let sock = socket(AF_INET, Int32(SOCK_STREAM), 0)
         guard sock >= 0 else { throw AdbError.ioError("无法创建 socket") }
         let flags = fcntl(sock, F_GETFL, 0)
@@ -144,6 +153,7 @@ final class AdbSocket {
             let need = count - out.count
             var buf = [UInt8](repeating: 0, count: need)
             let n = buf.withUnsafeMutableBytes { raw -> Int in recv(fd, raw.baseAddress, need, 0) }
+            if n == 0 { remoteClosed = true; closeSocket() }
             if n <= 0 { throw AdbError.ioError("读取超时或连接中断") }
             out.append(contentsOf: buf[0..<n])
         }
@@ -192,15 +202,41 @@ enum AdbProbe {
 
 // MARK: - ADB 客户端：握手 + shell + sync(push/pull/list/stat) + install
 final class AdbClient {
-    private let socket = AdbSocket()
-    private var nextLocalId: UInt32 = 1
+    // ---- 全局共享长连接 ----
+    // 关键修复：ADB 每建一条 TCP 连接都要走一次 RSA 授权握手，电视未勾选「始终允许」时
+    // 每条新连接都会弹授权框。这里让全 App 所有功能复用同一条已认证连接，一次授权即可，
+    // 不再每个功能重复握手；并用递归锁把命令串行化，避免多通道帧串台。
+    private static let sharedSocket = AdbSocket()
+    private static let connLock = NSRecursiveLock()
+    private static var connectedKey = ""
+    private static var idCounter: UInt32 = 1
 
-    private func allocLocalId() -> UInt32 { let id = nextLocalId; nextLocalId += 2; return id }
+    private var socket: AdbSocket { Self.sharedSocket }
+
+    private func allocLocalId() -> UInt32 {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
+        let id = Self.idCounter
+        Self.idCounter += 2
+        return id
+    }
 
     func connect(host: String, port: UInt16 = 5555) throws {
-        try socket.connect(host: host, port: port)
-        socket.setReadTimeout(20)
-        try handshake()
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
+        let key = "\(host):\(port)"
+        // 同一设备且连接仍有效 → 直接复用，跳过握手（不再弹 RSA 授权框）
+        if Self.connectedKey == key && Self.sharedSocket.isValid { return }
+        // 设备变更或旧连接已断 → 重建连接并握手
+        Self.sharedSocket.closeSocket()
+        do {
+            try Self.sharedSocket.connect(host: host, port: port)
+            // 握手阶段要给用户在电视上点「OK」留出充足时间，不能沿用普通命令的短超时
+            Self.sharedSocket.setReadTimeout(90)
+            try handshake()
+            Self.connectedKey = key
+        } catch {
+            Self.connectedKey = ""
+            throw error
+        }
     }
 
     private func handshake() throws {
@@ -209,7 +245,8 @@ final class AdbClient {
         try socket.sendMessage(cnxn)
         var repliedSignature = false
         var repliedPublicKey = false
-        let deadline = Date().addingTimeInterval(40)
+        // 首次授权需要用户在电视上勾选「始终允许」并点 OK，留足 150 秒，避免误判网络超时
+        let deadline = Date().addingTimeInterval(150)
         while Date() < deadline {
             let reply = try socket.receiveMessage()
             if reply.command == AdbCmd.cnxn { return }
@@ -221,6 +258,7 @@ final class AdbClient {
                     if let sig = SecKeyCreateSignature(key, .rsaSignatureDigestPKCS1v15SHA1, token as CFData, &error) {
                         try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 2, arg1: 0, data: sig as Data))
                         repliedSignature = true
+                        NotificationCenter.default.post(name: .adbAuthorizationRequired, object: nil)
                         continue
                     }
                 }
@@ -286,12 +324,14 @@ final class AdbClient {
 
     /// 执行 shell 命令，返回 stdout/stderr 合并文本
     func shell(_ command: String, timeout: TimeInterval = 60) throws -> String {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
         let data = try shellData(command, timeout: timeout)
         return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
     }
 
     /// 执行 shell 命令，返回原始字节（截图等二进制场景）
     func shellData(_ command: String, timeout: TimeInterval = 60) throws -> Data {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
         let (local, remote) = try open("shell:\(command)")
         defer { closeChannel(local: local, remote: remote) }
         socket.setReadTimeout(Int(timeout))
@@ -303,6 +343,7 @@ final class AdbClient {
     }
 
     func deviceModel() -> String {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
         guard let out = try? shell("getprop ro.product.model", timeout: 8) else { return "" }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -310,6 +351,7 @@ final class AdbClient {
     /// 一次连接批量读取所有设备属性。用一条 shell 命令把多个 getprop 串起来，
     /// 避免多次 open/close 通道；每条以换行分隔，定位符包裹便于切分。
     func readDeviceInfo() -> DeviceInfo {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
         var d = DeviceInfo()
         let cmd = [
             "echo M=;getprop ro.product.model",
@@ -372,6 +414,8 @@ final class AdbClient {
 
     /// sync 推送本地文件到设备
     func push(localURL: URL, remotePath: String, progress: (Int) -> Void) throws {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
+        socket.setReadTimeout(90)
         let (local, remote) = try openSync()
         defer { closeChannel(local: local, remote: remote) }
         let mode: UInt32 = 0o100644
@@ -403,6 +447,8 @@ final class AdbClient {
 
     /// sync 从设备拉取文件到本地，进度 0-100
     func pull(remotePath: String, to localURL: URL, progress: (Int) -> Void) throws {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
+        socket.setReadTimeout(90)
         let (local, remote) = try openSync()
         defer { closeChannel(local: local, remote: remote) }
         try sendSyncPacket("RECV", body: remotePath.data(using: .utf8)!, local: local, remote: remote)
@@ -425,6 +471,8 @@ final class AdbClient {
 
     /// 列目录（sync LIST → DENT/DONE）
     func listDir(_ path: String) throws -> [RemoteFile] {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
+        socket.setReadTimeout(90)
         let (local, remote) = try openSync()
         defer { closeChannel(local: local, remote: remote) }
         try sendSyncPacket("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
@@ -456,7 +504,8 @@ final class AdbClient {
 
     /// 截图：screencap -p → PNG。部分老设备把 \n 输出成 \r\n，需还原。
     func screenshot() throws -> Data {
-        var png = try shellData("screencap -p", timeout: 30)
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
+        var png = try shellData("screencap -p", timeout: 90)
         let crlf = Data([0x0d, 0x0a]), lf = Data([0x0a])
         if png.range(of: crlf) != nil {
             var fixed = Data(); var i = 0
@@ -472,6 +521,7 @@ final class AdbClient {
 
     /// 推送 + pm install 完整流程
     func installAPK(localURL: URL, progress: (Int) -> Void) throws -> String {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
         let base = localURL.deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: "[^A-Za-z0-9_.-]", with: "_", options: .regularExpression)
         let remotePath = "/data/local/tmp/adbios_\(Int(Date().timeIntervalSince1970))_\(base).apk"
@@ -483,6 +533,13 @@ final class AdbClient {
         return output
     }
 
-    func disconnect() { socket.closeSocket() }
-    deinit { socket.closeSocket() }
+    /// 保留共享长连接供其他功能复用（不再每次操作关闭连接、导致下次重新授权）。
+    func disconnect() { /* no-op：授权态随共享连接保留 */ }
+    /// 仅在切换设备/确认连接失效时主动废弃共享连接。
+    func invalidate() {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
+        Self.sharedSocket.closeSocket()
+        Self.connectedKey = ""
+    }
+    deinit { /* 共享连接由 App 生命周期管理，不随单个页面/实例释放 */ }
 }
