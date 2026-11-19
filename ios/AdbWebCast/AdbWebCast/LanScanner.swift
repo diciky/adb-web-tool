@@ -89,13 +89,9 @@ final class LanScanner {
         let e = errno
         if e != EINPROGRESS && e != EALREADY { return false }
 
-        var set = fd_set(); FD_ZERO(&set); FD_SET(fd, &set)
-        var tv = timeval(tv_sec: 0, tv_usec: timeoutMs * 1000)
-        let n = withUnsafeMutablePointer(to: &set) { setPtr -> Int32 in
-            withUnsafeMutablePointer(to: &tv) { tvPtr in
-                select(fd + 1, nil, setPtr, nil, tvPtr)
-            }
-        }
+        // 用 poll 等待可写，规避 Swift 对 fd_set/FD_ZERO 宏导入不完整的问题
+        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        let n = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, Int32(timeoutMs)) }
         if n <= 0 { return false }
         var soErr: Int32 = 0
         var len = socklen_t(MemoryLayout<Int32>.size)

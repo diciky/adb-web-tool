@@ -117,13 +117,9 @@ final class AdbSocket {
             if e != EINPROGRESS && e != EALREADY {
                 close(sock); throw AdbError.connectionFailed("\(host):\(port) 不可达")
             }
-            var set = fd_set(); FD_ZERO(&set); FD_SET(sock, &set)
-            var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
-            let n = withUnsafeMutablePointer(to: &set) { setPtr -> Int32 in
-                withUnsafeMutablePointer(to: &tv) { tvPtr in
-                    select(sock + 1, nil, setPtr, nil, tvPtr)
-                }
-            }
+            // 用 poll 等待可写，规避 Swift 对 fd_set/FD_ZERO 宏导入不完整的问题
+            var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
+            let n = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, Int32(timeout * 1000)) }
             if n <= 0 { close(sock); throw AdbError.connectionFailed("连接 \(host):\(port) 超时") }
             var soError: Int32 = 0
             var len = socklen_t(MemoryLayout<Int32>.size)
