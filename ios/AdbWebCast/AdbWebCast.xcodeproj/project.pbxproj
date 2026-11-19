@@ -8,16 +8,24 @@
 
 /* Begin PBXBuildFile section */
 		AA0000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* AppDelegate.swift */; };
-		AA0000000000000000000002 /* WebConsoleViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* WebConsoleViewController.swift */; };
+		AA0000000000000000000002 /* AdbKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000006 /* AdbKeys.swift */; };
+		AA0000000000000000000004 /* AdbProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000007 /* AdbProtocol.swift */; };
+		AA0000000000000000000005 /* LanScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000008 /* LanScanner.swift */; };
+		AA0000000000000000000006 /* DeviceListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000009 /* DeviceListViewController.swift */; };
+		AA0000000000000000000007 /* InstallViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000000A /* InstallViewController.swift */; };
 		AA0000000000000000000003 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* LaunchScreen.storyboard */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		BB0000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		BB0000000000000000000002 /* WebConsoleViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebConsoleViewController.swift; sourceTree = "<group>"; };
 		BB0000000000000000000003 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		BB0000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BB0000000000000000000005 /* AdbWebCast.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AdbWebCast.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000000000000000000006 /* AdbKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdbKeys.swift; sourceTree = "<group>"; };
+		BB0000000000000000000007 /* AdbProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdbProtocol.swift; sourceTree = "<group>"; };
+		BB0000000000000000000008 /* LanScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanScanner.swift; sourceTree = "<group>"; };
+		BB0000000000000000000009 /* DeviceListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListViewController.swift; sourceTree = "<group>"; };
+		BB000000000000000000000A /* InstallViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -43,7 +51,11 @@
 			isa = PBXGroup;
 			children = (
 				BB0000000000000000000001 /* AppDelegate.swift */,
-				BB0000000000000000000002 /* WebConsoleViewController.swift */,
+				BB0000000000000000000006 /* AdbKeys.swift */,
+				BB0000000000000000000007 /* AdbProtocol.swift */,
+				BB0000000000000000000008 /* LanScanner.swift */,
+				BB0000000000000000000009 /* DeviceListViewController.swift */,
+				BB000000000000000000000A /* InstallViewController.swift */,
 				BB0000000000000000000003 /* LaunchScreen.storyboard */,
 				BB0000000000000000000004 /* Info.plist */,
 			);
@@ -128,7 +140,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000001 /* AppDelegate.swift in Sources */,
-				AA0000000000000000000002 /* WebConsoleViewController.swift in Sources */,
+				AA0000000000000000000002 /* AdbKeys.swift in Sources */,
+				AA0000000000000000000004 /* AdbProtocol.swift in Sources */,
+				AA0000000000000000000005 /* LanScanner.swift in Sources */,
+				AA0000000000000000000006 /* DeviceListViewController.swift in Sources */,
+				AA0000000000000000000007 /* InstallViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

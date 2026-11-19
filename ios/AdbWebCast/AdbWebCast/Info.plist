@@ -52,7 +52,7 @@
   </dict>
   <!-- 局域网发现/访问权限（iOS 14+ 会弹「查找本地网络设备」） -->
   <key>NSLocalNetworkUsageDescription</key>
-  <string>需要访问局域网内的设备控制台服务（默认 8877 端口）。</string>
+  <string>需要扫描当前 WiFi 或热点网段，发现并连接局域网内的 ADB 电视。</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_http._tcp</string>

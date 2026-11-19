@@ -72,10 +72,18 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: iOS 客户端 ${{ github.ref_name }}
+          name: ADB TV 助手 iOS ${{ github.ref_name }}
           body: |
-            未签名 IPA，需用 Sideloadly / AltStore / 爱思助手自签后安装。
-            安装后在顶部输入框填写服务地址，例如 http://192.168.1.10:8877
+            完全独立的原生 iOS 客户端，**不依赖任何 Web 服务 / 电脑**。
+
+            特性：
+            - 自动读取当前 WiFi / 热点 IP，扫描所在网段的 5555 端口发现 ADB 电视
+            - 首次连接勾选电视上的「一律允许」后即可免密安装 APK
+            - 内置 ADB over TCP 协议栈（CNXN 握手 + sync 推送 + pm install）
+            - 原生文件选择器，直接选 APK 安装并实时显示进度
+
+            安装：未签名 IPA，需用 Sideloadly / AltStore / 爱思助手自签后安装。
+            局域网首次使用会弹出「查找本地网络设备」权限，请点允许。
           files: ${{ env.IPA_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
