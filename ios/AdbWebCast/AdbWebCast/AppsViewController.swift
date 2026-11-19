@@ -77,11 +77,13 @@ final class AppsViewController: UIViewController {
                 let sysPrefix = ["/system", "/vendor", "/product", "/odm", "/apex", "/framework", "/system_ext"]
                 for line in allOut.split(separator: "\n") {
                     let s = line.trimmingCharacters(in: .whitespaces)
-                    guard s.hasPrefix("package:"), let eq = s.firstIndex(of: "=") else { continue }
+                    guard s.hasPrefix("package:") else { continue }
+                    // 格式：package:<路径>=<包名>。用最后一个 "=" 分割，避免路径中带 "=" 时错位。
+                    guard let eq = s.lastIndex(of: "=") else { continue }
                     let path = String(s[s.index(s.startIndex, offsetBy: 8)..<eq])
                     let pkg = String(s[s.index(after: eq)...])
-                    if pkg.isEmpty { continue }
-                    result.append(AppInfo(pkg: pkg, path: path, name: (pkg as NSString).lastPathComponent,
+                    if pkg.isEmpty || path.isEmpty { continue }
+                    result.append(AppInfo(pkg: pkg, path: path, name: pkg,
                                           versionName: "", isSystem: sysPrefix.contains { path.hasPrefix($0) },
                                           isDisabled: disabled.contains(pkg)))
                 }

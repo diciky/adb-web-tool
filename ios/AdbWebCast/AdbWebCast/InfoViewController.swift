@@ -51,20 +51,11 @@ final class InfoViewController: UIViewController {
             var d = DeviceInfo()
             do {
                 try client.connect(host: self.host.ip, port: self.host.port)
-                func prop(_ key: String) -> String {
-                    (try? client.shell("getprop \(key)", timeout: 8))?.trimmed ?? ""
-                }
-                d.model = prop("ro.product.model")
-                d.brand = prop("ro.product.brand")
-                d.androidVersion = prop("ro.build.version.release")
-                d.sdk = prop("ro.build.version.sdk")
-                d.manufacturer = prop("ro.product.manufacturer")
-                d.serialno = prop("ro.serialno")
-                d.cpu = prop("ro.board.platform")
-                d.resolution = (try? client.shell("wm size", timeout: 8))?.trimmed ?? ""
-                d.battery = (try? client.shell("dumpsys battery | grep level", timeout: 8))?.trimmed ?? ""
+                d = client.readDeviceInfo()
                 d.ip = self.host.ip
                 client.disconnect()
+                // 连上即记住设备与型号，下次无需重新扫描。
+                if !d.model.isEmpty { DeviceStore.remember(ip: self.host.ip, port: self.host.port, name: d.model) }
             } catch {
                 client.disconnect()
             }

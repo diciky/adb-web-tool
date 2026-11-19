@@ -23,6 +23,9 @@
 		AA0000000000000000000016 /* AutostartViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* AutostartViewController.swift */; };
 		AA0000000000000000000017 /* BatchViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* BatchViewController.swift */; };
 		AA0000000000000000000018 /* ToolsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000018 /* ToolsViewController.swift */; };
+		AA0000000000000000000019 /* DeviceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000019 /* DeviceStore.swift */; };
+		AA000000000000000000001A /* RemoteViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001A /* RemoteViewController.swift */; };
+		AA000000000000000000001B /* ScreenViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001B /* ScreenViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +47,9 @@
 		BB0000000000000000000016 /* AutostartViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutostartViewController.swift; sourceTree = "<group>"; };
 		BB0000000000000000000017 /* BatchViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchViewController.swift; sourceTree = "<group>"; };
 		BB0000000000000000000018 /* ToolsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolsViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000019 /* DeviceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceStore.swift; sourceTree = "<group>"; };
+		BB000000000000000000001A /* RemoteViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteViewController.swift; sourceTree = "<group>"; };
+		BB000000000000000000001B /* ScreenViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -83,6 +89,9 @@
 				BB0000000000000000000016 /* AutostartViewController.swift */,
 				BB0000000000000000000017 /* BatchViewController.swift */,
 				BB0000000000000000000018 /* ToolsViewController.swift */,
+				BB0000000000000000000019 /* DeviceStore.swift */,
+				BB000000000000000000001A /* RemoteViewController.swift */,
+				BB000000000000000000001B /* ScreenViewController.swift */,
 				BB0000000000000000000003 /* LaunchScreen.storyboard */,
 				BB0000000000000000000004 /* Info.plist */,
 			);
@@ -181,6 +190,9 @@
 				AA0000000000000000000016 /* AutostartViewController.swift in Sources */,
 				AA0000000000000000000017 /* BatchViewController.swift in Sources */,
 				AA0000000000000000000018 /* ToolsViewController.swift in Sources */,
+				AA0000000000000000000019 /* DeviceStore.swift in Sources */,
+				AA000000000000000000001A /* RemoteViewController.swift in Sources */,
+				AA000000000000000000001B /* ScreenViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -236,7 +248,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdbWebCast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -244,7 +256,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.0;
+				MARKETING_VERSION = 2.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cool.cnb.adbweb.console;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -258,7 +270,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdbWebCast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -266,7 +278,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.0;
+				MARKETING_VERSION = 2.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cool.cnb.adbweb.console;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

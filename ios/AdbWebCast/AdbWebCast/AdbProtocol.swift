@@ -242,14 +242,20 @@ final class AdbClient {
         if !svc.hasSuffix("\u{0}") { svc += "\u{0}" }
         try socket.sendMessage(AdbMessage(command: AdbCmd.open, arg0: local, arg1: 0,
                                            data: svc.data(using: .utf8)!))
-        let reply = try socket.receiveMessage()
-        guard reply.command == AdbCmd.okay, reply.arg1 == local else {
+        // 容错：跳过上一条通道遗留的 OKAY/CLSE 帧（历史版本没回 CLSE 的 OKAY 会残留）。
+        // 直到读到「本次 local id 的 OKAY」或 FAIL 才返回，彻底避免残留帧污染。
+        var waitedFrames = 0
+        while true {
+            let reply = try socket.receiveMessage()
+            if reply.command == AdbCmd.okay && reply.arg1 == local {
+                return (local, reply.arg0)
+            }
             if reply.command == AdbCmd.fail {
                 throw AdbError.commandFailed(String(data: reply.data, encoding: .utf8) ?? "服务打开失败")
             }
-            throw AdbError.protocolError("OPEN 未获 OKAY")
+            waitedFrames += 1
+            if waitedFrames > 16 { throw AdbError.protocolError("OPEN 期间收到过多无关帧") }
         }
-        return (local, reply.arg0)
     }
 
     private func closeChannel(local: UInt32, remote: UInt32) {
@@ -267,6 +273,8 @@ final class AdbClient {
                 try socket.sendMessage(AdbMessage(command: AdbCmd.okay, arg0: local, arg1: remote, data: Data()))
                 return msg.data
             } else if msg.command == AdbCmd.clse {
+                // 关键：收到对方的 CLSE 必须回 OKAY，否则对方通道不关闭、状态错乱。
+                try? socket.sendMessage(AdbMessage(command: AdbCmd.okay, arg0: local, arg1: remote, data: Data()))
                 return nil
             } else if msg.command == AdbCmd.fail {
                 throw AdbError.commandFailed(String(data: msg.data, encoding: .utf8) ?? "命令失败")
@@ -297,6 +305,46 @@ final class AdbClient {
     func deviceModel() -> String {
         guard let out = try? shell("getprop ro.product.model", timeout: 8) else { return "" }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 一次连接批量读取所有设备属性。用一条 shell 命令把多个 getprop 串起来，
+    /// 避免多次 open/close 通道；每条以换行分隔，定位符包裹便于切分。
+    func readDeviceInfo() -> DeviceInfo {
+        var d = DeviceInfo()
+        let cmd = [
+            "echo M=;getprop ro.product.model",
+            "echo B=;getprop ro.product.brand",
+            "echo V=;getprop ro.product.manufacturer",
+            "echo A=;getprop ro.build.version.release",
+            "echo S=;getprop ro.build.version.sdk",
+            "echo N=;getprop ro.serialno",
+            "echo P=;getprop ro.board.platform",
+            "echo R=;wm size",
+            "echo C=;dumpsys battery | grep -i level",
+        ].joined(separator: ";")
+        guard let out = try? shell(cmd, timeout: 15) else { return d }
+        var cur = ""
+        for line in out.split(separator: "\n") {
+            let s = line.trimmingCharacters(in: .whitespaces)
+            if s.hasPrefix("M=") { cur = "M"; d.model = String(s.dropFirst(2)).trimmed; continue }
+            if s.hasPrefix("B=") { cur = "B"; d.brand = String(s.dropFirst(2)).trimmed; continue }
+            if s.hasPrefix("V=") { cur = "V"; d.manufacturer = String(s.dropFirst(2)).trimmed; continue }
+            if s.hasPrefix("A=") { cur = "A"; d.androidVersion = String(s.dropFirst(2)).trimmed; continue }
+            if s.hasPrefix("S=") { cur = "S"; d.sdk = String(s.dropFirst(2)).trimmed; continue }
+            if s.hasPrefix("N=") { cur = "N"; d.serialno = String(s.dropFirst(2)).trimmed; continue }
+            if s.hasPrefix("P=") { cur = "P"; d.cpu = String(s.dropFirst(2)).trimmed; continue }
+            if s.hasPrefix("R=") { cur = "R"; d.resolution = String(s.dropFirst(2)).trimmed; continue }
+            if s.hasPrefix("C=") { cur = "C"; d.battery = String(s.dropFirst(2)).trimmed; continue }
+            // 续行（值本身含换行，如 wm size 可能多行）
+            if !s.isEmpty {
+                switch cur {
+                case "M": if d.model.isEmpty { d.model = s }
+                case "R": if d.resolution.isEmpty || d.resolution.hasPrefix("Physical") { d.resolution += " " + s }
+                default: break
+                }
+            }
+        }
+        return d
     }
 
     // MARK: sync 子协议

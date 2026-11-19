@@ -1,16 +1,14 @@
 import UIKit
 
-/// 工具箱页：截图 / 电源 / 遥控按键 / 文本输入 / Shell 命令 / 剪贴板
+/// 工具箱页：屏幕(截图/实时) / 电源 / 文字输入 / 剪贴板 / Shell 命令。
+/// 遥控器已独立为 Tab 中的「遥控」页。
 final class ToolsViewController: UIViewController {
 
     private let host: AdbHost
-    private var picker = DocumentPickerHelper()
 
-    // MARK: UI
-    private let screenshotBtn = ToolsViewController.btn("截取屏幕", "camera")
-    private let powerBtn = ToolsViewController.btn("电源操作", "power")
-    private let remoteLabel: UILabel = {
-        let l = UILabel(); l.text = "遥控按键"; l.font = .boldSystemFont(ofSize: 15); return l
+    private let statusLabel: UILabel = {
+        let l = UILabel(); l.font = .systemFont(ofSize: 12); l.textColor = .secondaryLabel
+        l.numberOfLines = 0; l.text = ""; return l
     }()
     private let shellInput: UITextField = {
         let t = UITextField(); t.placeholder = "输入 shell 命令，回车执行"
@@ -22,10 +20,6 @@ final class ToolsViewController: UIViewController {
         t.isEditable = false; t.backgroundColor = .secondarySystemBackground
         t.layer.cornerRadius = 8; t.translatesAutoresizingMaskIntoConstraints = false; return t
     }()
-    private let statusLabel: UILabel = {
-        let l = UILabel(); l.font = .systemFont(ofSize: 12); l.textColor = .secondaryLabel
-        l.numberOfLines = 0; l.text = ""; return l
-    }()
 
     private static func btn(_ title: String, _ icon: String) -> UIButton {
         let b = UIButton(type: .system)
@@ -34,16 +28,9 @@ final class ToolsViewController: UIViewController {
         b.titleLabel?.font = .boldSystemFont(ofSize: 14)
         b.backgroundColor = .secondarySystemFill
         b.layer.cornerRadius = 9
-        b.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 44).isActive = true
         return b
     }
-
-    // 遥控按键网格：标题 -> keyevent
-    private let keys: [(String, Int)] = [
-        ("↑", 19), ("↓", 20), ("←", 21), ("→", 22),
-        ("OK", 23), ("返回", 4), ("主页", 3), ("菜单", 82),
-        ("音量+", 24), ("音量-", 25), ("静音", 164), ("电源", 26),
-    ]
 
     init(host: AdbHost) { self.host = host; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -72,23 +59,13 @@ final class ToolsViewController: UIViewController {
             stack.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -32),
         ])
 
-        stack.addArrangedSubview(screenshotBtn)
-        stack.addArrangedSubview(powerBtn)
+        let screenBtn = ToolsViewController.btn("屏幕：截图 / 实时查看", "camera")
+        screenBtn.addTarget(self, action: #selector(openScreen), for: .touchUpInside)
+        stack.addArrangedSubview(screenBtn)
 
-        stack.addArrangedSubview(remoteLabel)
-        let grid = UIStackView(); grid.axis = .horizontal; grid.distribution = .fillEqually
-        grid.spacing = 8
-        let leftCol = UIStackView(); leftCol.axis = .vertical; leftCol.spacing = 8
-        let rightCol = UIStackView(); rightCol.axis = .vertical; rightCol.spacing = 8
-        for (i, k) in keys.enumerated() {
-            let b = UIButton(type: .system); b.setTitle(k.0, for: .normal)
-            b.titleLabel?.font = .boldSystemFont(ofSize: 15); b.backgroundColor = .secondarySystemFill
-            b.layer.cornerRadius = 8; b.heightAnchor.constraint(equalToConstant: 40).isActive = true
-            b.tag = k.1; b.addTarget(self, action: #selector(keyTap(_:)), for: .touchUpInside)
-            (i % 2 == 0 ? leftCol : rightCol).addArrangedSubview(b)
-        }
-        grid.addArrangedSubview(leftCol); grid.addArrangedSubview(rightCol)
-        stack.addArrangedSubview(grid)
+        let powerBtn = ToolsViewController.btn("电源操作", "power")
+        powerBtn.addTarget(self, action: #selector(power), for: .touchUpInside)
+        stack.addArrangedSubview(powerBtn)
 
         let textBtn = ToolsViewController.btn("输入文字到电视", "keyboard")
         textBtn.addTarget(self, action: #selector(inputText), for: .touchUpInside)
@@ -102,40 +79,17 @@ final class ToolsViewController: UIViewController {
         let shellBtn = ToolsViewController.btn("执行 Shell 命令", "terminal")
         shellBtn.addTarget(self, action: #selector(runShell), for: .touchUpInside)
         stack.addArrangedSubview(shellBtn)
+        shellOutput.heightAnchor.constraint(equalToConstant: 180).isActive = true
         stack.addArrangedSubview(shellOutput)
-
         stack.addArrangedSubview(statusLabel)
 
-        screenshotBtn.addTarget(self, action: #selector(screenshot), for: .touchUpInside)
-        powerBtn.addTarget(self, action: #selector(power), for: .touchUpInside)
         shellInput.addTarget(self, action: #selector(runShell), for: .editingDidEndOnExit)
     }
 
     private func status(_ s: String) { DispatchQueue.main.async { self.statusLabel.text = s } }
 
-    // MARK: 截图
-    @objc private func screenshot() {
-        status("截图中…")
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
-            let client = AdbClient()
-            do {
-                try client.connect(host: self.host.ip, port: self.host.port)
-                let png = try client.screenshot()
-                client.disconnect()
-                let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("screenshot_\(Int(Date().timeIntervalSince1970)).png")
-                try png.write(to: tmp)
-                DispatchQueue.main.async {
-                    self.status("截图成功（\(png.count) 字节）")
-                    let vc = UIActivityViewController(activityItems: [tmp], applicationActivities: nil)
-                    vc.popoverPresentationController?.sourceView = self.screenshotBtn
-                    self.present(vc, animated: true)
-                }
-            } catch {
-                client.disconnect()
-                self.status("截图失败：\(error.localizedDescription)")
-            }
-        }
+    @objc private func openScreen() {
+        navigationController?.pushViewController(ScreenViewController(host: host), animated: true)
     }
 
     // MARK: 电源
@@ -146,11 +100,9 @@ final class ToolsViewController: UIViewController {
             sheet.addAction(UIAlertAction(title: item.0, style: .default) { _ in self.execCmd(item.1, msg: "已发送：\(item.0)") })
         }
         sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-        sheet.popoverPresentationController?.sourceView = powerBtn
+        sheet.popoverPresentationController?.sourceView = view
         present(sheet, animated: true)
     }
-
-    @objc private func keyTap(_ sender: UIButton) { execCmd("input keyevent \(sender.tag)", msg: "按键已发送") }
 
     @objc private func inputText() {
         UIKitHelper.input("输入文字", placeholder: "英文字母/数字", in: self) { [weak self] text in
@@ -164,7 +116,6 @@ final class ToolsViewController: UIViewController {
         UIKitHelper.input("设置电视剪贴板", placeholder: "可输入中文", in: self) { [weak self] text in
             guard let self, !text.isEmpty else { return }
             let escaped = text.replacingOccurrences(of: "\"", with: "\\\"")
-            // 优先 Clipper 广播，失败回退 service call
             let cmd = "am broadcast -a org.albireo.clipper.set -e text \"\(escaped)\""
             self.execCmd(cmd, msg: "已尝试写入剪贴板（需电视安装 Clipper 应用支持中文）")
         }

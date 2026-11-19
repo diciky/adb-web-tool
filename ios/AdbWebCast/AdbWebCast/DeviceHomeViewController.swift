@@ -22,6 +22,7 @@ final class DeviceHomeViewController: UITabBarController {
         let apps = AppsViewController(host: host)
         let install = InstallViewController(host: host, deviceModel: deviceModel)
         let files = FilesViewController(host: host)
+        let remote = RemoteViewController(host: host, deviceModel: deviceModel)
         let autostart = AutostartViewController(host: host)
         let batch = BatchViewController(host: host)
         let tools = ToolsViewController(host: host)
@@ -38,6 +39,7 @@ final class DeviceHomeViewController: UITabBarController {
             wrap(apps, "应用", "square.grid.2x2"),
             wrap(install, "安装", "arrow.down.app"),
             wrap(files, "文件", "folder"),
+            wrap(remote, "遥控", "gamecontroller"),
             wrap(autostart, "自启", "bolt"),
             wrap(batch, "批量", "square.stack.3d.up"),
             wrap(tools, "工具", "wrench.and.screwdriver"),

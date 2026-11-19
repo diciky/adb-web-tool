@@ -1,9 +1,10 @@
 import UIKit
 
-/// 第一屏：三种设备发现方式（自动扫描 / 手动网段 / IP 直连）+ 设备列表
+/// 第一屏：已保存设备 + 三种发现方式（自动扫描 / 手动网段 / IP 直连）
 final class DeviceListViewController: UIViewController {
 
-    private var hosts: [AdbHost: String] = [:]   // host -> 设备型号（异步回填）
+    private var hosts: [AdbHost: String] = [:]   // 本次扫描发现 host -> 型号（异步回填）
+    private var saved: [SavedDevice] = []        // 本地记住的设备
     private var interfaces: [LocalInterface] = []
     private var scanning = false
     private var scanToken = 0
@@ -13,7 +14,7 @@ final class DeviceListViewController: UIViewController {
     }()
     private let subtitleLabel: UILabel = {
         let l = UILabel(); l.font = .systemFont(ofSize: 13); l.textColor = .secondaryLabel
-        l.numberOfLines = 0; l.text = "自动扫描 / 手动网段 / IP 直连，发现局域网内的 ADB 电视"; return l
+        l.numberOfLines = 0; l.text = "连过一次即永久记住 · 自动扫描 / 手动网段 / IP 直连"; return l
     }()
     private let netLabel: UILabel = {
         let l = UILabel(); l.font = .systemFont(ofSize: 12); l.textColor = .secondaryLabel
@@ -31,7 +32,7 @@ final class DeviceListViewController: UIViewController {
     }()
     private let refresh = UIRefreshControl()
     private let emptyLabel: UILabel = {
-        let l = UILabel(); l.text = "尚未发现设备\n用上方任一方式开始发现"
+        let l = UILabel(); l.text = "尚未发现设备\n连过一次的电视会自动显示在这里\n也可用上方任一方式开始发现"
         l.textColor = .tertiaryLabel; l.textAlignment = .center; l.numberOfLines = 0
         l.font = .systemFont(ofSize: 15); return l
     }()
@@ -52,6 +53,13 @@ final class DeviceListViewController: UIViewController {
         view.backgroundColor = .systemBackground
         buildUI()
         refreshNetworkInfo()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        saved = DeviceStore.all()
+        tableView.reloadData()
+        updateEmpty()
     }
 
     private func buildUI() {
@@ -102,7 +110,6 @@ final class DeviceListViewController: UIViewController {
         UIKitHelper.input("输入要扫描的网段", placeholder: "例如 10.10.10", in: self) { [weak self] text in
             guard let self else { return }
             let base = text.trimmingCharacters(in: .whitespaces)
-            // 支持用户输入完整 IP 或 10.10.10.0/24 形式，提取前三段
             let candidates = base.split(separator: ".").compactMap { Int($0) }
             guard candidates.count >= 3, candidates.prefix(3).allSatisfy({ $0 >= 0 && $0 <= 255 }) else {
                 UIKitHelper.alert("网段格式不对", "请输入形如 10.10.10 的前三段。", in: self); return
@@ -155,48 +162,91 @@ final class DeviceListViewController: UIViewController {
         }
     }
 
-    /// 连接设备读取型号，回填列表（只读，失败静默）
+    /// 连接设备读取型号并记住（只读，失败静默）
     private func fetchModel(for host: AdbHost, token: Int) {
         DispatchQueue.global(qos: .utility).async {
             let client = AdbClient()
             do {
                 try client.connect(host: host.ip, port: host.port)
-                let model = client.deviceModel()
+                let info = client.readDeviceInfo()
                 client.disconnect()
-                guard !model.isEmpty else { return }
+                let name = info.model
+                if !name.isEmpty { DeviceStore.remember(ip: host.ip, port: host.port, name: name) }
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.scanToken == token else { return }
-                    self.hosts[host] = model
+                    self.hosts[host] = name
+                    self.saved = DeviceStore.all()
                     self.tableView.reloadData()
                 }
             } catch { client.disconnect() }
         }
     }
 
-    private func updateEmpty() { tableView.backgroundView = hosts.isEmpty ? emptyLabel : nil }
+    private func updateEmpty() { tableView.backgroundView = (hosts.isEmpty && saved.isEmpty) ? emptyLabel : nil }
+
+    private func openDevice(_ host: AdbHost, model: String) {
+        let vc = DeviceHomeViewController(host: host, deviceModel: model)
+        navigationController?.pushViewController(vc, animated: true)
+    }
 }
 
 // MARK: - UITableView
 extension DeviceListViewController: UITableViewDataSource, UITableViewDelegate {
-    func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { hosts.count }
+    func numberOfSections(in tableView: UITableView) -> Int { 2 }
+    func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int {
+        section == 0 ? saved.count : hosts.count
+    }
     func tableView(_ tv: UITableView, titleForHeaderInSection section: Int) -> String? {
-        hosts.isEmpty ? nil : "发现 \(hosts.count) 台设备（点击进入功能面板）"
+        if section == 0 { return saved.isEmpty ? nil : "已记住的设备（点击直连 · 长按改名）" }
+        return hosts.isEmpty ? nil : "本次发现 \(hosts.count) 台"
     }
     func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
-        let host = Array(hosts.keys)[indexPath.row]
-        let model = hosts[host] ?? ""
-        cell.textLabel?.text = model.isEmpty ? host.serial : "\(model)  ·  \(host.serial)"
+        if indexPath.section == 0 {
+            let d = saved[indexPath.row]
+            cell.textLabel?.text = d.displayName.isEmpty ? d.ip : "\(d.displayName)  ·  \(d.ip)"
+            cell.detailTextLabel?.text = "\(d.ip):\(d.port)"
+            cell.imageView?.image = UIImage(systemName: "tv.circle.fill")
+            cell.imageView?.tintColor = .systemGreen
+        } else {
+            let host = Array(hosts.keys)[indexPath.row]
+            let model = hosts[host] ?? ""
+            cell.textLabel?.text = model.isEmpty ? host.serial : "\(model)  ·  \(host.serial)"
+            cell.detailTextLabel?.text = "\(host.ip):\(host.port)"
+            cell.imageView?.image = UIImage(systemName: "tv")
+            cell.imageView?.tintColor = .systemBlue
+        }
         cell.textLabel?.font = .systemFont(ofSize: 15)
-        cell.imageView?.image = UIImage(systemName: "tv")
-        cell.imageView?.tintColor = .systemBlue
         cell.accessoryType = .disclosureIndicator
         return cell
     }
     func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
         tv.deselectRow(at: indexPath, animated: true)
-        let host = Array(hosts.keys)[indexPath.row]
-        let vc = DeviceHomeViewController(host: host, deviceModel: hosts[host] ?? "")
-        navigationController?.pushViewController(vc, animated: true)
+        if indexPath.section == 0 {
+            let d = saved[indexPath.row]
+            openDevice(AdbHost(ip: d.ip, port: d.port), model: d.displayName)
+        } else {
+            let host = Array(hosts.keys)[indexPath.row]
+            openDevice(host, model: hosts[host] ?? "")
+        }
+    }
+    func tableView(_ tv: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard indexPath.section == 0 else { return nil }
+        let d = saved[indexPath.row]
+        let del = UIContextualAction(style: .destructive, title: "忘记") { [weak self] _, _, done in
+            DeviceStore.remove(ip: d.ip, port: d.port)
+            self?.saved = DeviceStore.all(); self?.tableView.reloadData(); self?.updateEmpty()
+            done(true)
+        }
+        let rename = UIContextualAction(style: .normal, title: "改名") { [weak self] _, _, done in
+            guard let self else { done(true); return }
+            UIKitHelper.input("设备备注名", placeholder: "例如 客厅电视", current: d.alias, in: self) { name in
+                DeviceStore.rename(ip: d.ip, port: d.port, alias: name)
+                self.saved = DeviceStore.all(); self.tableView.reloadData()
+            }
+            done(true)
+        }
+        rename.backgroundColor = .systemOrange
+        return UISwipeActionsConfiguration(actions: [del, rename])
     }
 }

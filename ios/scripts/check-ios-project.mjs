@@ -34,6 +34,9 @@ const required = [
   'AdbWebCast/AdbWebCast/AutostartViewController.swift',
   'AdbWebCast/AdbWebCast/BatchViewController.swift',
   'AdbWebCast/AdbWebCast/ToolsViewController.swift',
+  'AdbWebCast/AdbWebCast/DeviceStore.swift',
+  'AdbWebCast/AdbWebCast/RemoteViewController.swift',
+  'AdbWebCast/AdbWebCast/ScreenViewController.swift',
   'AdbWebCast/AdbWebCast/Info.plist',
   'AdbWebCast/AdbWebCast/LaunchScreen.storyboard',
   'AdbWebCast/AdbWebCast.xcodeproj/project.pbxproj',
@@ -85,7 +88,11 @@ const protoMust = [
   ['func screenshot', 'screenshot 截图能力'],
   ['receiveStreamData', '跳过传输层 OKAY 的流读取'],
   ['pm install -r', 'install 命令'],
+  ['func readDeviceInfo', '一次连接批量读取设备属性'],
 ];
+// 流控关键修复：CLSE 必须回 OKAY；open 容错跳过残留帧。防止设备信息全空/文件超时回归。
+if (!proto.includes('msg.command == AdbCmd.clse')) fail('receiveStreamData 缺少 CLSE 分支');
+if (!proto.includes('waitedFrames > 16')) fail('open 缺少残留帧容错跳过（会导致连续命令被污染）');
 for (const [needle, desc] of protoMust) {
   if (!proto.includes(needle)) fail(`AdbProtocol.swift 缺少 ${desc}（未找到 ${needle}）`);
 }
@@ -159,9 +166,19 @@ for (const f of ['AppDelegate.swift', 'AdbKeys.swift', 'AdbProtocol.swift', 'Lan
                  'DeviceListViewController.swift', 'InstallViewController.swift', 'Models.swift',
                  'UIHelpers.swift', 'DeviceHomeViewController.swift', 'InfoViewController.swift',
                  'AppsViewController.swift', 'FilesViewController.swift', 'AutostartViewController.swift',
-                 'BatchViewController.swift', 'ToolsViewController.swift', 'Info.plist']) {
+                 'BatchViewController.swift', 'ToolsViewController.swift', 'DeviceStore.swift',
+                 'RemoteViewController.swift', 'ScreenViewController.swift', 'Info.plist']) {
   if (!pbxText.includes(f)) fail(`project.pbxproj 没有引用 ${f}`);
 }
+// 设备持久化 + 遥控独立页 + 屏幕页关键点
+const listSrc = readFileSync(join(swiftDir, 'DeviceListViewController.swift'), 'utf8');
+if (!listSrc.includes('DeviceStore.all()')) fail('设备列表未读取本地记住的设备');
+if (!listSrc.includes('DeviceStore.remember')) fail('设备列表未持久化连接的设备');
+const homeSrc = readFileSync(join(swiftDir, 'DeviceHomeViewController.swift'), 'utf8');
+if (!homeSrc.includes('RemoteViewController')) fail('功能主页缺少独立遥控页');
+const screenSrc = readFileSync(join(swiftDir, 'ScreenViewController.swift'), 'utf8');
+if (!screenSrc.includes('UIImageWriteToSavedPhotosAlbum')) fail('屏幕页缺少保存到相册');
+if (!screenSrc.includes('while live')) fail('屏幕页缺少实时刷屏循环');
 if (!failed) ok('project.pbxproj 结构完整且引用全部源码');
 
 // ---------- ipa 构建脚本 ----------
