@@ -17,7 +17,7 @@ permissions:
 env:
   SCHEME: AdbWebCast
   PROJECT: ios/AdbWebCast/AdbWebCast.xcodeproj
-  IPA_NAME: AdbWebCast-ios16.ipa
+  IPA_NAME: AdbWebCast-ios.ipa
 
 jobs:
   build:

@@ -1,6 +1,6 @@
-# iOS 16+ 客户端（ipa）
+# iOS 18.4+ 客户端（ipa）
 
-把 Web 控制台装进一个 iOS 原生壳，最低支持 **iOS 16.0**，可打成 ipa 安装。
+把 Web 控制台装进一个 iOS 原生壳，最低支持 **iOS 18.4**，可打成 ipa 安装。
 
 ## 你需要什么
 
@@ -16,7 +16,7 @@ cd ios
 ./build-ipa.sh --unsigned   # 纯未签名 ipa，自行签
 ```
 
-产物在 `ios/AdbWebCast-ios16.ipa`。
+产物在 `ios/AdbWebCast-ios.ipa`。
 
 ## 装到设备
 

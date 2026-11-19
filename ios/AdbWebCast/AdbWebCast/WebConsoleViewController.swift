@@ -181,7 +181,7 @@ final class WebConsoleViewController: UIViewController {
         })
         sheet.addAction(UIAlertAction(title: "清除网页缓存", style: .destructive) { [weak self] _ in
             let store = WKWebsiteDataStore.default()
-            store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { _ in
+            store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
                 self?.handleRefresh()
             }
         })
@@ -294,7 +294,7 @@ extension WebConsoleViewController: WKUIDelegate {
         completionHandler: @escaping ([URL]?) -> Void
     ) {
         let picker = UIDocumentPickerViewController(
-            documentTypes: Self.documentTypes(for: parameters),
+            documentTypes: Self.documentTypes(),
             in: .import // .import 会把文件复制到 App 沙箱，权限问题最少
         )
         picker.allowsMultipleSelection = parameters.allowsMultipleSelection
@@ -312,26 +312,13 @@ extension WebConsoleViewController: WKUIDelegate {
         handler(urls)
     }
 
-    /// iOS 16 不认识 apk 这个 UTI，直接给 com.pkware.zip-archive / public.data
-    /// 会把安装包挡在选择器外面（显示为灰色不可选）。这里按 accept 里的扩展名补全。
-    private static func documentTypes(for parameters: WKOpenPanelParameters) -> [String] {
-        var types: [String] = []
-        let accepts = parameters.acceptMimeTypes ?? []
-        for accept in accepts {
-            let mime = accept.lowercased()
-            if mime.contains("android.package-archive") || mime.contains(".apk") {
-                types.append(contentsOf: ["public.data", "com.pkware.zip-archive", "public.item"])
-            } else if mime.contains("image") {
-                types.append("public.image")
-            } else if mime.contains("video") {
-                types.append("public.movie")
-            } else if mime.contains("audio") {
-                types.append("public.audio")
-            } else if mime.contains("text") {
-                types.append("public.text")
-            }
-        }
-        return types.isEmpty ? ["public.data", "public.item"] : Array(Set(types))
+    /// iOS 不认识 apk 这个 UTI，直接给 com.pkware.zip-archive / public.data
+    /// 会把安装包挡在选择器外面（显示为灰色不可选）。
+    /// WKOpenPanelParameters 没有公开 accept 类型（acceptMimeTypes 并不存在），
+    /// 因此统一放行通用 UTI，让 apk / zip / 各类媒体文件都能被选中。
+    private static func documentTypes() -> [String] {
+        return ["public.data", "public.item", "com.pkware.zip-archive",
+                "public.image", "public.movie", "public.audio", "public.text"]
     }
 
     // JS alert / confirm / prompt，不实现的话网页上的确认弹窗直接不显示
