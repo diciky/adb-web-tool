@@ -278,7 +278,9 @@ final class AdbClient {
                     var error: Unmanaged<CFError>?
                     // ADB 把 20 字节 token 当作「已算好的 SHA1 摘要」，用 Digest 变体签名。
                     guard let sig = SecKeyCreateSignature(key, .rsaSignatureDigestPKCS1v15SHA1, token as CFData, &error) else {
-                        let d = (error?.takeRetainedValue() as Error?).localizedDescription ?? "未知错误"
+                        let d: String
+                        if let e = error { d = e.takeRetainedValue().localizedDescription }
+                        else { d = "未知错误" }
                         throw AdbError.handshakeFailed("RSA 签名失败：\(d)")
                     }
                     try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 2, arg1: 0, data: sig as Data))
