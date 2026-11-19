@@ -31,12 +31,20 @@ final class RemoteViewController: UIViewController {
         title = "遥控器"
         view.backgroundColor = .systemBackground
         buildUI()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(onStage(_:)), name: .adbConnectionStage, object: nil)
         cmdQueue.async { [weak self] in self?.ensureClient() }
+    }
+
+    @objc private func onStage(_ note: Notification) {
+        guard let text = note.object as? String else { return }
+        DispatchQueue.main.async { [weak self] in self?.statusLabel.text = text }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         stopRepeat()
+        NotificationCenter.default.removeObserver(self, name: .adbConnectionStage, object: nil)
         cmdQueue.async { [weak self] in self?.client?.disconnect(); self?.client = nil }
     }
 
