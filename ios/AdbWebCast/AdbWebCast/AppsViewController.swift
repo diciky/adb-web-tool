@@ -309,7 +309,6 @@ extension AppsViewController: UITableViewDataSource, UITableViewDelegate {
         } else {
             cfg.image = placeholderImage(a.name)
         }
-        cfg.imageProperties.renderingMode = .alwaysOriginal
         cfg.imageProperties.maximumSize = CGSize(width: 40, height: 40)
         cfg.imageProperties.cornerRadius = 9
         cell.contentConfiguration = cfg
