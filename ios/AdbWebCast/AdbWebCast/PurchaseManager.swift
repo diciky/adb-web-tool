@@ -172,7 +172,7 @@ final class PaywallViewController: UIViewController, UITableViewDataSource, UITa
         restore.setTitle("恢复购买", for: .normal)
         restore.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
         restore.accessibilityLabel = "恢复已购买的项目"
-        restore.addTarget(self, action: #selector(restore), for: .touchUpInside)
+        restore.addTarget(self, action: #selector(restorePurchases), for: .touchUpInside)
 
         let status = UILabel()
         status.font = .systemFont(ofSize: 12)
@@ -192,7 +192,7 @@ final class PaywallViewController: UIViewController, UITableViewDataSource, UITa
 
     @objc private func close() { dismiss(animated: true) }
 
-    @objc private func restore() {
+    @objc private func restorePurchases() {
         Task {
             await PurchaseManager.shared.restore()
             await MainActor.run {
@@ -237,7 +237,7 @@ final class PaywallViewController: UIViewController, UITableViewDataSource, UITa
                 let p = products[indexPath.row]
                 cfg.text = proTitle(for: p)
                 cfg.secondaryText = p.displayPrice
-                cfg.image = UIImage(systemName: p.productIdentifier == ProProductID.lifetime ? "infinity.circle" : "calendar")
+                cfg.image = UIImage(systemName: p.id == ProProductID.lifetime ? "infinity.circle" : "calendar")
                 cell.selectionStyle = .default
             }
         }
@@ -247,7 +247,7 @@ final class PaywallViewController: UIViewController, UITableViewDataSource, UITa
     }
 
     private func proTitle(for product: Product) -> String {
-        switch product.productIdentifier {
+        switch product.id {
         case ProProductID.monthly: return "月度订阅"
         case ProProductID.yearly: return "年度订阅 · 7 天免费试用"
         case ProProductID.lifetime: return "永久解锁（推荐）"

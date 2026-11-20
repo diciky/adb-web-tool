@@ -406,9 +406,9 @@ final class HealthViewController: UIViewController {
     private func setupAlerts() {
         let thresholds = HealthHistory.thresholds()
         let ac = UIAlertController(title: "阈值告警", message: "留空表示关闭该项。达到阈值时本地通知提醒。", preferredStyle: .alert)
-        ac.addTextField { $0.placeholder = "CPU %（如 85）"; $0.text = thresholds.cpu.map(String.init); $0.keyboardType = .decimalPad }
-        ac.addTextField { $0.placeholder = "温度 °C（如 60）"; $0.text = thresholds.temp.map(String.init); $0.keyboardType = .decimalPad }
-        ac.addTextField { $0.placeholder = "存储占用 %（如 90）"; $0.text = thresholds.storage.map(String.init); $0.keyboardType = .decimalPad }
+        ac.addTextField { $0.placeholder = "CPU %（如 85）"; $0.text = thresholds.cpu.map { String($0) }; $0.keyboardType = .decimalPad }
+        ac.addTextField { $0.placeholder = "温度 °C（如 60）"; $0.text = thresholds.temp.map { String($0) }; $0.keyboardType = .decimalPad }
+        ac.addTextField { $0.placeholder = "存储占用 %（如 90）"; $0.text = thresholds.storage.map { String($0) }; $0.keyboardType = .decimalPad }
         ac.addAction(UIAlertAction(title: "取消", style: .cancel))
         ac.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
             let fields = ac.textFields ?? []

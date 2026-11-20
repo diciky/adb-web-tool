@@ -249,7 +249,7 @@ for (const needle of ['cat /proc/stat', 'cat /proc/meminfo', 'df -P', 'dumpsys b
 // v3.7.0：Pro 订阅/买断（StoreKit 2）+ 设备健康管理 + 截图/健康高级功能
 const purchaseSrc = readFileSync(join(swiftDir, 'PurchaseManager.swift'), 'utf8');
 for (const needle of ['import StoreKit', 'Product.products(for:', 'Transaction.currentEntitlements',
-                      'AppStore.sync()', 'func purchase(', 'func restore()', 'presentPaywall',
+                      'AppStore.sync()', 'func purchase(', 'func restorePurchases()', 'presentPaywall',
                       'pro.monthly', 'pro.yearly', 'pro.lifetime']) {
   if (!purchaseSrc.includes(needle)) fail(`PurchaseManager.swift 缺少 ${needle}`);
 }

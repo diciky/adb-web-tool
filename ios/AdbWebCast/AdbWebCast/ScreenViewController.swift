@@ -99,6 +99,7 @@ final class ScreenViewController: UIViewController {
     // MARK: 单张截图
     @objc private func takeScreenshot() {
         status("截图中…")
+        let isPro = PurchaseManager.shared.isPro
         workQueue.async { [weak self] in
             guard let self else { return }
             let c = AdbClient()
@@ -108,7 +109,7 @@ final class ScreenViewController: UIViewController {
                 c.disconnect()
                 guard let img = UIImage(data: png) else { throw AdbError.protocolError("截图数据无效") }
                 self.show(img)
-                if PurchaseManager.shared.isPro { ScreenshotHistory.save(img, host: self.host) }
+                if isPro { ScreenshotHistory.save(img, host: self.host) }
                 self.status("截图成功 · \(png.count) 字节 · 可点「保存到相册」")
             } catch {
                 c.disconnect()
@@ -223,7 +224,7 @@ final class ScreenViewController: UIViewController {
             var failure = ""
             do {
                 try handler.perform([request])
-                result = (request.results ?? []).compactMap { $0.topCandidate(1)?.string }.joined(separator: "\n")
+                result = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
             } catch {
                 failure = error.localizedDescription
             }
