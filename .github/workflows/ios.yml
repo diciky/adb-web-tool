@@ -17,7 +17,6 @@ permissions:
 env:
   SCHEME: AdbWebCast
   PROJECT: ios/AdbWebCast/AdbWebCast.xcodeproj
-  IPA_NAME: AdbWebCast-ios.ipa
 
 jobs:
   build:
@@ -31,6 +30,13 @@ jobs:
 
       - name: 静态校验 iOS 工程
         run: node ios/scripts/check-ios-project.mjs
+
+      - name: 生成带版本号的 IPA 文件名
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 'MARKETING_VERSION = ' "$PROJECT/project.pbxproj" | sed -E 's/.*= ([0-9.]+);.*/\1/')
+          echo "IPA_NAME=AdbWebCast-ios-v${VERSION}.ipa" >> "$GITHUB_ENV"
+          echo "IPA 文件名: AdbWebCast-ios-v${VERSION}.ipa"
 
       - name: 归档（无签名）
         run: |
