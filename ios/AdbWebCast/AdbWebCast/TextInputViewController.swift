@@ -186,11 +186,13 @@ final class TextInputViewController: UIViewController {
         historyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for text in history.prefix(4) {
             let b = UIButton(type: .system)
-            b.setTitle(text.count > 12 ? String(text.prefix(12)) + "…" : text, for: .normal)
+            var config = UIButton.Configuration.plain()
+            config.title = text.count > 12 ? String(text.prefix(12)) + "…" : text
+            config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
+            b.configuration = config
             b.titleLabel?.font = .preferredFont(forTextStyle: .caption1)
             b.layer.cornerRadius = 8
             b.backgroundColor = .tertiarySystemFill
-            b.contentEdgeInsets = UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
             b.accessibilityLabel = "填入历史文字：\(text)"
             b.addTarget(self, action: #selector(fillHistory(_:)), for: .touchUpInside)
             historyStack.addArrangedSubview(b)
@@ -237,7 +239,7 @@ final class TextInputViewController: UIViewController {
             guard isASCII else {
                 throw AdbError.commandFailed("直输模式只支持英文/数字/半角标点，中文请切换到智能或剪贴板模式")
             }
-            try client.shell("input text \(Self.shellSingleQuote(text.replacingOccurrences(of: " ", with: "%s")))", timeout: 30)
+            _ = try client.shell("input text \(Self.shellSingleQuote(text.replacingOccurrences(of: " ", with: "%s")))", timeout: 30)
             return "已直接输入：\(text)"
         }
 
@@ -246,7 +248,7 @@ final class TextInputViewController: UIViewController {
 
         if let helper {
             let cmd = "am broadcast -a \(helper).set -e text \(Self.shellDoubleQuote(text))"
-            try client.shell(cmd, timeout: 30)
+            _ = try client.shell(cmd, timeout: 30)
             _ = try? client.shell("input keyevent 279", timeout: 15)  // KEYCODE_PASTE
             return "已通过剪贴板写入并粘贴：\(text)"
         }
@@ -259,7 +261,7 @@ final class TextInputViewController: UIViewController {
         }
 
         if isASCII && mode != .clipboard {
-            try client.shell("input text \(Self.shellSingleQuote(text.replacingOccurrences(of: " ", with: "%s")))", timeout: 30)
+            _ = try client.shell("input text \(Self.shellSingleQuote(text.replacingOccurrences(of: " ", with: "%s")))", timeout: 30)
             return "剪贴板不可用，已直输英文：\(text)"
         }
 

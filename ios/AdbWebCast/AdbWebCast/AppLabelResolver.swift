@@ -344,13 +344,13 @@ enum AppLabelResolver {
             let commentLen = Int(b.u16(offset + 32))
             let local = Int(b.u32(offset + 42))
             let nameStart = offset + 46
-            guard b.has(nameStart, nameLen),
-                  let name = String(bytes: Array(b.bytes[nameStart..<(nameStart + nameLen)]), encoding: .utf8) else {
-                break
-            }
+            guard b.has(nameStart, nameLen) else { break }
+            let nameBytes = Array(b.bytes[nameStart..<(nameStart + nameLen)])
+            let name = String(decoding: nameBytes, as: UTF8.self)
             entries[name] = ZipEntry(method: method, compressedSize: csize,
                                      uncompressedSize: usize, localOffset: local)
-            offset += 46 + nameLen + extraLen + commentLen
+            let nextOffset = offset + 46 + nameLen + extraLen + commentLen
+            offset = nextOffset
         }
         return entries
     }
@@ -374,15 +374,15 @@ enum AppLabelResolver {
         var produced = 0
         var succeeded = false
 
-        data.withUnsafeBytes { src in
-            output.withUnsafeMutableBytes { dst in
+        data.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+            output.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
                 guard let srcBase = src.baseAddress, let dstBase = dst.baseAddress else { return }
                 var stream = compression_stream()
-                stream.src_ptr = srcBase.assumingMemoryBound(to: UInt8.self)
+                stream.src_ptr = UnsafeMutablePointer(mutating: srcBase.assumingMemoryBound(to: UInt8.self))
                 stream.src_size = data.count
                 stream.dst_ptr = dstBase.assumingMemoryBound(to: UInt8.self)
                 stream.dst_size = expected
-                guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_DEFLATE)
+                guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
                         != COMPRESSION_STATUS_ERROR else { return }
                 let status = compression_stream_process(&stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
                 produced = expected - stream.dst_size
@@ -398,6 +398,8 @@ enum AppLabelResolver {
 
     private struct Bytes {
         let bytes: [UInt8]
+
+        var count: Int { bytes.count }
 
         init(_ data: Data) { bytes = [UInt8](data) }
 
