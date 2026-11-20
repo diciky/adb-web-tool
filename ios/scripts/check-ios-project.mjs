@@ -274,6 +274,14 @@ for (const needle of ['dumpsys package', 'parseAutostart', 'packageName(from:', 
 if (/pm list packages -f/.test(autoSrc) && !autoSrc.includes('packageName(from:')) {
   fail('自启管理仍在从 pm list packages -f 路径切包名（== 污染风险）');
 }
+// v3.4.3：中文输入必须走 ADBKeyBoard 的 ADB_INPUT_TEXT 广播（真机验证 service call clipboard / keyevent 279 静默失败）
+const textSrc = readFileSync(join(swiftDir, 'TextInputViewController.swift'), 'utf8');
+for (const needle of ['ADB_INPUT_TEXT', 'adbIME', 'adbIMEPackage', 'ADBKeyBoard', 'ime set', 'installAPK', 'ADBKeyBoardAsset']) {
+  if (!textSrc.includes(needle)) fail(`文字输入缺少 ${needle}`);
+}
+const imeAssetSrc = readFileSync(join(swiftDir, 'ADBKeyBoardAsset.swift'), 'utf8');
+if (!imeAssetSrc.includes('writeToTemp') || !imeAssetSrc.includes('apkData')) fail('缺少内联 ADBKeyBoard APK 资源');
+if (!pbxSrc.includes('ADBKeyBoardAsset.swift in Sources')) fail('工程未编译 ADBKeyBoardAsset.swift');
 if (!failed) ok('project.pbxproj 结构完整且引用全部源码');
 
 // ---------- ipa 构建脚本 ----------

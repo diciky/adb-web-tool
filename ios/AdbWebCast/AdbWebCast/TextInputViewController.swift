@@ -12,6 +12,10 @@ final class TextInputViewController: UIViewController {
     private let host: AdbHost
     private let defaultsKey = "adbweb.text.history.v1"
     private let clipperPackages = ["org.albireo.clipper"]
+    /// 真机验证：BRAVIA Android 9 上 service call clipboard / input keyevent 279 均静默失败，
+    /// 唯有 ADBKeyBoard 的 ADB_INPUT_TEXT 广播能把中文 commit 到输入框（2026-11-20 10.10.10.28 实测）。
+    private let adbIME = "com.android.adbkeyboard/.AdbIME"
+    private let adbIMEPackage = "com.android.adbkeyboard"
 
     private enum Mode: Int, CaseIterable {
         case smart = 0
@@ -41,7 +45,7 @@ final class TextInputViewController: UIViewController {
         l.adjustsFontForContentSizeCategory = true
         l.textColor = .secondaryLabel
         l.numberOfLines = 0
-        l.text = "可输入中文、英文或标点。智能模式会优先写入电视剪贴板并粘贴；纯英文也可直接输入。"
+        l.text = "可输入中文、英文或标点。智能模式：英文直接输入；中文会自动在电视安装输入助手并发送（首次需点一下电视输入框）。"
         return l
     }()
 
@@ -235,37 +239,62 @@ final class TextInputViewController: UIViewController {
     private func deliver(_ text: String, mode: Mode, client: AdbClient) throws -> String {
         let isASCII = text.unicodeScalars.allSatisfy { $0.value < 128 }
 
+        // 直输模式：仅 ASCII，不切换输入法，最轻量。
         if mode == .direct {
             guard isASCII else {
-                throw AdbError.commandFailed("直输模式只支持英文/数字/半角标点，中文请切换到智能或剪贴板模式")
+                throw AdbError.commandFailed("直输模式只支持英文/数字/半角标点，中文请切换到智能模式")
             }
-            _ = try client.shell("input text \(Self.shellSingleQuote(text.replacingOccurrences(of: " ", with: "%s")))", timeout: 30)
+            try directInput(text, client: client)
             return "已直接输入：\(text)"
         }
 
-        let installed = (try? client.shell("pm list packages", timeout: 30)) ?? ""
-        let helper = clipperPackages.first { installed.contains($0) }
+        // 智能模式：英文走 input text（真机验证有效，且不切换输入法、不会让输入框失焦）。
+        if isASCII && mode == .smart {
+            try directInput(text, client: client)
+            return "已直接输入：\(text)"
+        }
 
-        if let helper {
+        // 中文（智能/剪贴板模式）：走 ADBKeyBoard 广播。
+        // 真机实测（BRAVIA Android 9）：service call clipboard 与 input keyevent 279 均静默失败，
+        // com.android.tvremoteime / Sony IME 无文本注入接口；唯有 ADB_INPUT_TEXT 广播有效。
+        let installed = (try? client.shell("pm list packages", timeout: 30)) ?? ""
+        var imeReady = installed.contains(adbIMEPackage)
+        if !imeReady, let apkURL = ADBKeyBoardAsset.writeToTemp() {
+            _ = try? client.installAPK(localURL: apkURL, progress: { _ in })
+            try? FileManager.default.removeItem(at: apkURL)
+            imeReady = (try? client.shell("pm path \(adbIMEPackage)", timeout: 15)) != nil
+        }
+        if imeReady {
+            // 必须让 ADBKeyBoard 成为当前输入法，否则广播不会 commit 到输入框（真机验证）。
+            let current = (try? client.shell("settings get secure default_input_method", timeout: 15))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            var needFocusHint = false
+            if !current.contains(adbIMEPackage) {
+                _ = try? client.shell("ime enable \(adbIME)", timeout: 15)
+                _ = try? client.shell("ime set \(adbIME)", timeout: 15)
+                needFocusHint = true
+            }
+            let cmd = "am broadcast -a ADB_INPUT_TEXT --es msg \(Self.shellDoubleQuote(text))"
+            _ = try client.shell(cmd, timeout: 30)
+            return needFocusHint
+                ? "已发送：\(text)。首次已切换电视输入法，请点一下电视输入框即可看到；下次无需再切"
+                : "已输入：\(text)"
+        }
+
+        // 兜底：用户在电视装了 Clipper
+        if let helper = clipperPackages.first(where: { installed.contains($0) }) {
             let cmd = "am broadcast -a \(helper).set -e text \(Self.shellDoubleQuote(text))"
             _ = try client.shell(cmd, timeout: 30)
-            _ = try? client.shell("input keyevent 279", timeout: 15)  // KEYCODE_PASTE
-            return "已通过剪贴板写入并粘贴：\(text)"
-        }
-
-        // Android ≤ 6 的系统剪贴板服务；失败再按模式决定是否直输 ASCII。
-        let serviceCmd = "service call clipboard 2 i32 1 s16 \(Self.shellDoubleQuote(text))"
-        if (try? client.shell(serviceCmd, timeout: 20)) != nil {
             _ = try? client.shell("input keyevent 279", timeout: 15)
-            return "已通过系统剪贴板写入并粘贴：\(text)"
+            return "已通过 Clipper 剪贴板写入并粘贴：\(text)"
         }
 
-        if isASCII && mode != .clipboard {
-            _ = try client.shell("input text \(Self.shellSingleQuote(text.replacingOccurrences(of: " ", with: "%s")))", timeout: 30)
-            return "剪贴板不可用，已直输英文：\(text)"
-        }
+        throw AdbError.commandFailed("电视缺少中文输入能力：自动安装 ADBKeyBoard 失败，也未检测到 Clipper。请在电视手动安装后重试。")
+    }
 
-        throw AdbError.commandFailed("电视未提供剪贴板写入能力。请在电视安装 Clipper 应用后重试（中文必须走剪贴板）。")
+    private func directInput(_ text: String, client: AdbClient) throws {
+        let escaped = text.replacingOccurrences(of: " ", with: "%s")
+        _ = try client.shell("input text \(Self.shellSingleQuote(escaped))", timeout: 30)
     }
 
     private func saveHistory(_ text: String) {
