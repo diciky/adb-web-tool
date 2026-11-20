@@ -356,7 +356,7 @@ final class AdbClient {
                         throw AdbError.handshakeFailed("RSA 签名失败：\(d)")
                     }
                     try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 2, arg1: 0, data: sig as Data))
-                    AdbLog.log("已发送 AUTH 签名 \(sig.count)B")
+                    AdbLog.log("已发送 AUTH 签名 \((sig as Data).count)B")
                     repliedSignature = true
                     // key 已存：电视立即回 CNXN；key 未存：立即回新 token（都应 <1s）
                     socket.setReadTimeout(8)
