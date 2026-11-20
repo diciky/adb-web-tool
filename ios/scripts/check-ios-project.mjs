@@ -90,15 +90,22 @@ const protoMust = [
   ['pm install -r', 'install 命令'],
   ['func readDeviceInfo', '一次连接批量读取设备属性'],
 ];
-// 流控关键修复：CLSE 必须回 OKAY；open 容错跳过残留帧。防止设备信息全空/文件超时回归。
+// 帧层关键修复（v2.6.0）：packet store 缓存池 + OKAY 直接丢弃 + CLSE 回 CLSE + 通道精确匹配。
+// 根治"过多 OKAY 帧 / OPEN 期间过多无关帧 / 设备信息全空"。
 if (!proto.includes('msg.command == AdbCmd.clse')) fail('receiveStreamData 缺少 CLSE 分支');
-if (!proto.includes('waitedFrames > 16')) fail('open 缺少残留帧容错跳过（会导致连续命令被污染）');
+if (!proto.includes('packetStore')) fail('缺少 packet store 帧缓存池（残留帧会被误判为无关帧）');
+if (!proto.includes('func readFrame')) fail('缺少统一 readFrame（通道匹配 + 缓存池 + OKAY 丢弃）');
+if (!proto.includes('func argsMatch')) fail('缺少 argsMatch 通道精确匹配');
+if (!proto.includes('m.command != AdbCmd.okay')) fail('传输层 OKAY 未被直接消费（大文件 push 会误报过多 OKAY 帧）');
+// 收到 CLSE 必须回 CLSE（不是 OKAY），否则通道状态错乱、残留污染后续命令。
+if (!/msg\.command == AdbCmd\.clse[\s\S]{0,200}command: AdbCmd\.clse/.test(proto)) fail('收到对方 CLSE 应回 CLSE');
 for (const [needle, desc] of protoMust) {
   if (!proto.includes(needle)) fail(`AdbProtocol.swift 缺少 ${desc}（未找到 ${needle}）`);
 }
-if (!proto.includes('reply.arg1 == local')) fail('OPEN 校验应检查响应 arg1 == localId');
 if (!proto.includes('return (local, reply.arg0)')) fail('remoteId 应取响应 arg0');
-if (!failed) ok('ADB 协议常量与握手关键点齐全');
+// 设备信息命令必须让 key 与值同一行（echo KEY=$(...)），否则解析全空。
+if (!proto.includes('echo M=$(getprop')) fail('设备信息命令格式错误：值未与 key 同行会导致信息全空');
+if (!failed) ok('ADB 协议常量与帧层关键点齐全');
 
 // ---------- 内置鉴权密钥 ----------
 const keys = readFileSync(join(swiftDir, 'AdbKeys.swift'), 'utf8');
