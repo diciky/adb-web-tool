@@ -380,7 +380,7 @@ final class AdbClient {
         try? socket.sendMessage(AdbMessage(command: AdbCmd.clse, arg0: local, arg1: remote, data: Data()))
         // 尽力消费对方的 CLSE 确认（30ms 上限，不阻塞实时屏幕刷新）；
         // 若读到的是别的通道帧，归入缓存池，绝不丢弃。
-        if let m = socket.receiveMessageIfAvailable(30) {
+        if let m = socket.receiveMessageIfAvailable(timeoutMs: 30) {
             if !(m.arg1 == local && (m.command == AdbCmd.clse || m.command == AdbCmd.okay)) {
                 Self.packetStore[m.arg1, default: []].append(m)
             }
