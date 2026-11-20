@@ -207,6 +207,24 @@ if (!listSrc.includes('DeviceStore.all()')) fail('设备列表未读取本地记
 if (!listSrc.includes('DeviceStore.remember')) fail('设备列表未持久化连接的设备');
 const homeSrc = readFileSync(join(swiftDir, 'DeviceHomeViewController.swift'), 'utf8');
 if (!homeSrc.includes('RemoteViewController')) fail('功能主页缺少独立遥控页');
+// v3.0.0：全部功能扁平化 —— 恰好 5 个 tab，工具箱/自启/批量/日志从「设备」页宫格进入，
+// 不再依赖 UIKit 自动生成的「更多」收纳页。
+const tabCount = (homeSrc.match(/wrap\(info,|wrap\(apps,|wrap\(install,|wrap\(files,|wrap\(remote,/g) || []).length;
+if (tabCount !== 5) fail(`设备主页应为 5 个 Tab，实际 ${tabCount}`);
+for (const hidden of ['wrap(autostart', 'wrap(batch', 'wrap(tools']) {
+  if (homeSrc.includes(hidden)) fail(`「${hidden.slice(5)}」不应再作为独立 Tab（已移入设备页宫格）`);
+}
+const infoSrc = readFileSync(join(swiftDir, 'InfoViewController.swift'), 'utf8');
+for (const needle of ['ToolsViewController(host:', 'AutostartViewController(host:', 'BatchViewController(host:', 'LogViewerViewController()']) {
+  if (!infoSrc.includes(needle)) fail(`设备页宫格缺少入口 ${needle}`);
+}
+// v3.0.0：运行日志系统
+const helpersSrc = readFileSync(join(swiftDir, 'UIHelpers.swift'), 'utf8');
+for (const needle of ['enum AdbLog', 'static func log(', 'static func dump()', 'class LogViewerViewController']) {
+  if (!helpersSrc.includes(needle)) fail(`UIHelpers.swift 缺少 ${needle}`);
+}
+if (!proto.includes('AdbLog.log(')) fail('AdbProtocol 未接入运行日志（无法远程诊断协议问题）');
+if (proto.match(/AdbLog\.log/g).length < 15) fail('AdbProtocol 日志埋点不足（连接/握手/OPEN/shell/sync 均需覆盖）');
 const screenSrc = readFileSync(join(swiftDir, 'ScreenViewController.swift'), 'utf8');
 if (!screenSrc.includes('UIImageWriteToSavedPhotosAlbum')) fail('屏幕页缺少保存到相册');
 if (!screenSrc.includes('while live')) fail('屏幕页缺少实时刷屏循环');

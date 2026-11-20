@@ -278,12 +278,17 @@ final class AdbClient {
         Self.lastHost = host
         Self.lastPort = port
         // 同一设备且连接仍有效 → 直接复用，跳过握手（不再弹 RSA 授权框）
-        if Self.connectedKey == key && Self.sharedSocket.isValid { return }
+        if Self.connectedKey == key && Self.sharedSocket.isValid {
+            AdbLog.log("连接复用 \(key)")
+            return
+        }
+        AdbLog.log("新建连接 \(key)（原 key=\(Self.connectedKey.isEmpty ? "无" : Self.connectedKey)）")
         // 设备变更或旧连接已断 → 重建连接并握手
         Self.sharedSocket.closeSocket()
         Self.packetStore.removeAll()   // 新连接，丢弃旧通道的残留帧
         Self.deviceMaxData = 4096     // 新连接重新协商，先按最保守值发
         do {
+            AdbLog.log("TCP 连接 \(host):\(port)")
             postStage("正在连接电视 \(host):\(port)…")
             try Self.sharedSocket.connect(host: host, port: port)
             // 握手超时按阶段内部分级控制（见 handshake），保证已授权电视秒级完成
@@ -295,6 +300,7 @@ final class AdbClient {
             // 留下的死连接，首次握手会以网络错误失败。拆掉重连、重新握手一次——
             // 已授权电视 <1s 完成，等价 adb server 的传输自动重启。
             if case AdbError.ioError = error {
+                AdbLog.log("连接失败，半开兜底重试：\(error.localizedDescription)", level: "W")
                 Self.sharedSocket.closeSocket()
                 Self.packetStore.removeAll()
                 Self.deviceMaxData = 4096
@@ -330,10 +336,12 @@ final class AdbClient {
                 // 关键：CNXN 回复 arg0=版本 arg1=设备 maxdata。此后所有 WRTE 负载
                 // 都必须 ≤ 该值（官方 adb server 的 min(MAX_PAYLOAD, 设备 maxdata) 行为）。
                 if reply.arg1 > 0 { Self.deviceMaxData = min(reply.arg1, AdbCmd.maxData) }
+                AdbLog.log("CNXN 完成：设备版本 0x\(String(reply.arg0, radix: 16)) maxdata=\(reply.arg1)B")
                 postStage("授权成功（帧上限 \(Self.deviceMaxData)B），正在读取设备信息…")
                 return
             }
             if reply.command == AdbCmd.auth && reply.arg0 == 1 {
+                AdbLog.log("收到 AUTH token \(reply.data.count)B")
                 let token = reply.data
                 guard token.count == 20 else {
                     throw AdbError.handshakeFailed("授权令牌长度异常(\(token.count))")
@@ -348,6 +356,7 @@ final class AdbClient {
                         throw AdbError.handshakeFailed("RSA 签名失败：\(d)")
                     }
                     try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 2, arg1: 0, data: sig as Data))
+                    AdbLog.log("已发送 AUTH 签名 \(sig.count)B")
                     repliedSignature = true
                     // key 已存：电视立即回 CNXN；key 未存：立即回新 token（都应 <1s）
                     socket.setReadTimeout(8)
@@ -357,6 +366,7 @@ final class AdbClient {
                 }
                 if !repliedPublicKey, let pub = AdbKeys.publicBlob {
                     try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 3, arg1: 0, data: pub))
+                    AdbLog.log("已发送公钥 \(pub.count)B，等待电视授权")
                     repliedPublicKey = true
                     socket.setReadTimeout(35)   // 等用户在电视上勾选「一律允许」并点 OK
                     postStage("请在电视勾选「一律允许」并点 OK…")
@@ -395,7 +405,8 @@ final class AdbClient {
             if case .ioError = e { retriable = true }
             if case .protocolError = e { retriable = true }
             guard retriable, Self.lastHost != nil else { throw e }
-            do { try reconnectLocked() } catch { throw e }   // 重连失败则抛原始错误
+            AdbLog.log("传输错误自动重连重试：\(e.localizedDescription)", level: "W")
+            do { try reconnectLocked() } catch { AdbLog.log("重连失败：\(error.localizedDescription)", level: "E"); throw e }
             return try op()
         }
     }
@@ -437,6 +448,7 @@ final class AdbClient {
                 Self.packetStore[m.arg1, default: []].append(m)
             }
         }
+        AdbLog.log("readFrame 超时：通道 \(local) expected=\(expected.map { String($0) }) 池内帧数=\(Self.packetStore.values.map(\.count).reduce(0, +))", level: "E")
         throw AdbError.protocolError("读取响应超时（通道 \(local)）")
     }
 
@@ -444,12 +456,15 @@ final class AdbClient {
         let local = allocLocalId()
         var svc = destination
         if !svc.hasSuffix("\u{0}") { svc += "\u{0}" }
+        AdbLog.log("OPEN [\(local)] \(destination)")
         try socket.sendMessage(AdbMessage(command: AdbCmd.open, arg0: local, arg1: 0,
                                            data: svc.data(using: .utf8)!))
         let reply = try readFrame(local: local, remote: nil, expected: [AdbCmd.okay, AdbCmd.fail], allowZeros: true)
         if reply.command == AdbCmd.fail {
+            AdbLog.log("OPEN [\(local)] 失败：\(String(data: reply.data, encoding: .utf8) ?? "")", level: "E")
             throw AdbError.commandFailed(String(data: reply.data, encoding: .utf8) ?? "服务打开失败")
         }
+        AdbLog.log("OPEN [\(local)] OKAY remote=\(reply.arg0)")
         return (local, reply.arg0)
     }
 
@@ -494,7 +509,9 @@ final class AdbClient {
     /// 执行 shell 命令，返回原始字节（截图等二进制场景）。断线自动重连重试一次。
     func shellData(_ command: String, timeout: TimeInterval = 60) throws -> Data {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
-        return try withAutoReconnect {
+        let cmdBrief = command.count > 120 ? String(command.prefix(120)) + "…" : command
+        AdbLog.log("shell> \(cmdBrief)")
+        let data = try withAutoReconnect {
             let (local, remote) = try open("shell:\(command)")
             defer { closeChannel(local: local, remote: remote) }
             socket.setReadTimeout(Int(timeout))
@@ -504,6 +521,8 @@ final class AdbClient {
             }
             return output
         }
+        AdbLog.log("shell< \(data.count)B")
+        return data
     }
 
     func deviceModel() -> String {
@@ -531,7 +550,10 @@ final class AdbClient {
             "echo R=$(wm size)",
             "echo C=$(dumpsys battery | grep -i level)",
         ].joined(separator: ";")
-        guard let out = try? shell(cmd, timeout: 15) else { return d }
+        guard let out = try? shell(cmd, timeout: 15) else {
+            AdbLog.log("设备信息读取失败", level: "E")
+            return d
+        }
         var cur = ""
         for line in out.split(separator: "\n") {
             let s = line.trimmingCharacters(in: .whitespaces)
@@ -558,9 +580,12 @@ final class AdbClient {
 
     // MARK: sync 子协议
 
+    private static var dentSeen = 0
+
     private func openSync() throws -> (UInt32, UInt32) {
         let ch = try open("sync:\u{0}")
         Self.syncBuffer.removeAll()   // 新通道/重试后都从空流开始
+        Self.dentSeen = 0
         return ch
     }
 
@@ -625,6 +650,12 @@ final class AdbClient {
         let len = Int(header.u32le(4))
         guard len >= 0 else { throw AdbError.protocolError("sync 包长度异常 \(len)") }
         let body = len > 0 ? (try readSyncBytes(len, local: local, remote: remote)) ?? Data() : Data()
+        if id == "DENT" {
+            Self.dentSeen += 1
+            if Self.dentSeen <= 3 || Self.dentSeen % 50 == 0 { AdbLog.log("sync<DENT #\(Self.dentSeen) len=\(len)") }
+        } else {
+            AdbLog.log("sync<\(id) len=\(len)")
+        }
         return (id, body)
     }
 
@@ -636,6 +667,7 @@ final class AdbClient {
             let (local, remote) = try openSync()
             defer { closeChannel(local: local, remote: remote) }
             let mode: UInt32 = 0o100644
+            AdbLog.log("SEND \(remotePath)（分块 \(frameLimit)B）")
             try sendSyncFrame("SEND", body: "\(remotePath),\(mode)".data(using: .utf8)!, local: local, remote: remote)
 
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.intValue ?? 0
@@ -672,6 +704,7 @@ final class AdbClient {
             socket.setReadTimeout(90)
             let (local, remote) = try openSync()
             defer { closeChannel(local: local, remote: remote) }
+            AdbLog.log("RECV \(remotePath)")
             try sendSyncFrame("RECV", body: remotePath.data(using: .utf8)!, local: local, remote: remote)
             FileManager.default.createFile(atPath: localURL.path, contents: nil)
             guard let handle = try? FileHandle(forWritingTo: localURL) else {
@@ -697,8 +730,10 @@ final class AdbClient {
             socket.setReadTimeout(90)
             let (local, remote) = try openSync()
             defer { closeChannel(local: local, remote: remote) }
+            AdbLog.log("LIST \(path)")
             try sendSyncFrame("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
             var result: [RemoteFile] = []
+            AdbLog.log("LIST 开始等待响应…")
             while let (id, body) = try receiveSyncPacket(local: local, remote: remote) {
                 if id == "DONE" { break }
                 if id == "FAIL" {
@@ -717,6 +752,7 @@ final class AdbClient {
                                           isDir: (mode & 0o170000) == 0o040000, size: size,
                                           mtime: Date(timeIntervalSince1970: Double(mtime)), mode: mode))
             }
+            AdbLog.log("LIST 完成：\(result.count) 项")
             return result.sorted { l, r in
                 if l.isDir != r.isDir { return l.isDir }
                 return l.name < r.name
@@ -770,9 +806,12 @@ final class AdbClient {
         let base = localURL.deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: "[^A-Za-z0-9_.-]", with: "_", options: .regularExpression)
         let remotePath = "/data/local/tmp/adbios_\(Int(Date().timeIntervalSince1970))_\(base).apk"
+        AdbLog.log("install push → \(remotePath)")
         try push(localURL: localURL, remotePath: remotePath, progress: progress)
         progress(99)
+        AdbLog.log("pm install 开始…")
         let output = try shell("pm install -r -d \(remotePath)", timeout: 120)
+        AdbLog.log("pm install 输出：\(output.trimmed.prefix(200))")
         _ = try? shell("rm -f \(remotePath)", timeout: 10)
         progress(100)
         // 把 "Failure [CODE]" 翻译成用户能看懂的提示

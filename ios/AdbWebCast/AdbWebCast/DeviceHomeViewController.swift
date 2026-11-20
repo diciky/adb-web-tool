@@ -1,6 +1,8 @@
 import UIKit
 
-/// 设备功能主页：顶部设备信息 + TabBar 承载 7 项功能
+/// 设备功能主页：5 个 Tab 扁平承载全部功能。
+/// 工具箱/自启/批量/日志放在「设备」Tab 的功能宫格里一击直达，不再出现 UIKit
+/// 自动生成的「更多」收纳页（超过 5 个 tab 就会被折叠进去）。
 final class DeviceHomeViewController: UITabBarController {
 
     private let host: AdbHost
@@ -23,9 +25,6 @@ final class DeviceHomeViewController: UITabBarController {
         let install = InstallViewController(host: host, deviceModel: deviceModel)
         let files = FilesViewController(host: host)
         let remote = RemoteViewController(host: host, deviceModel: deviceModel)
-        let autostart = AutostartViewController(host: host)
-        let batch = BatchViewController(host: host)
-        let tools = ToolsViewController(host: host)
 
         func wrap(_ vc: UIViewController, _ title: String, _ icon: String) -> UINavigationController {
             vc.title = title
@@ -40,10 +39,8 @@ final class DeviceHomeViewController: UITabBarController {
             wrap(install, "安装", "arrow.down.app"),
             wrap(files, "文件", "folder"),
             wrap(remote, "遥控", "gamecontroller"),
-            wrap(autostart, "自启", "bolt"),
-            wrap(batch, "批量", "square.stack.3d.up"),
-            wrap(tools, "工具", "wrench.and.screwdriver"),
         ]
         selectedIndex = 0
+        AdbLog.log("进入设备页 \\(host.serial)（5 Tab 扁平结构）")
     }
 }
