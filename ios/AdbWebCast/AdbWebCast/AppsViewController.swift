@@ -1,12 +1,13 @@
 import UIKit
 
-/// 应用管理页：列表 / 启动 / 强制停止 / 清除数据 / 启用禁用 / 卸载
+/// 应用管理页：用户/系统应用切换、图标、中文名、搜索、启动/停止/清除/禁用/卸载
 final class AppsViewController: UIViewController {
 
     private let host: AdbHost
     private var apps: [AppInfo] = []
     private var filtered: [AppInfo] = []
-    private var showSystem = false
+    private var userCount = 0
+    private var systemCount = 0
     private let search = UISearchController(searchResultsController: nil)
 
     private let tableView: UITableView = {
@@ -17,22 +18,39 @@ final class AppsViewController: UIViewController {
     }()
     private let refresh = UIRefreshControl()
     private let statusLabel: UILabel = {
-        let l = UILabel(); l.font = .systemFont(ofSize: 12); l.textColor = .secondaryLabel
-        l.textAlignment = .center; l.text = ""; return l
+        let l = UILabel()
+        l.font = .preferredFont(forTextStyle: .footnote)
+        l.textColor = .secondaryLabel
+        l.textAlignment = .center
+        l.adjustsFontForContentSizeCategory = true
+        l.translatesAutoresizingMaskIntoConstraints = false
+        l.text = ""
+        return l
     }()
-    private let filterButton: UIButton = {
-        let b = UIButton(type: .system); b.titleLabel?.font = .systemFont(ofSize: 13)
-        return b
+    private let segmented: UISegmentedControl = {
+        let s = UISegmentedControl(items: ["用户应用", "系统应用"])
+        s.selectedSegmentIndex = 0
+        s.translatesAutoresizingMaskIntoConstraints = false
+        s.accessibilityLabel = "应用类型切换"
+        return s
     }()
+    private let headerView: UIView = {
+        let v = UIView()
+        v.backgroundColor = .clear
+        return v
+    }()
+
+    private var showSystem: Bool { segmented.selectedSegmentIndex == 1 }
 
     init(host: AdbHost) { self.host = host; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        title = "应用"
         view.backgroundColor = .systemBackground
-        tableView.dataSource = self; tableView.delegate = self
-        tableView.tableHeaderView = statusLabel
+        tableView.dataSource = self
+        tableView.delegate = self
         tableView.refreshControl = refresh
         refresh.addTarget(self, action: #selector(load), for: .valueChanged)
         search.obscuresBackgroundDuringPresentation = false
@@ -40,9 +58,23 @@ final class AppsViewController: UIViewController {
         navigationItem.searchController = search
         definesPresentationContext = true
 
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: filterButton)
-        filterButton.addTarget(self, action: #selector(toggleFilter), for: .touchUpInside)
-        updateFilterButton()
+        statusLabel.accessibilityLabel = "应用列表状态"
+        segmented.addTarget(self, action: #selector(segmentChanged), for: .valueChanged)
+        headerView.addSubview(statusLabel)
+        headerView.addSubview(segmented)
+        NSLayoutConstraint.activate([
+            statusLabel.topAnchor.constraint(equalTo: headerView.topAnchor, constant: 4),
+            statusLabel.leadingAnchor.constraint(equalTo: headerView.leadingAnchor, constant: 16),
+            statusLabel.trailingAnchor.constraint(equalTo: headerView.trailingAnchor, constant: -16),
+            segmented.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+            segmented.leadingAnchor.constraint(equalTo: headerView.leadingAnchor, constant: 16),
+            segmented.trailingAnchor.constraint(equalTo: headerView.trailingAnchor, constant: -16),
+            segmented.bottomAnchor.constraint(equalTo: headerView.bottomAnchor, constant: -8),
+        ])
+        headerView.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: 92)
+        headerView.layoutIfNeeded()
+        tableView.tableHeaderView = headerView
+        updateSegmentTitles()
 
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
@@ -54,11 +86,13 @@ final class AppsViewController: UIViewController {
         load()
     }
 
-    private func updateFilterButton() {
-        filterButton.setTitle(showSystem ? "仅用户应用" : "显示全部", for: .normal)
+    private func updateSegmentTitles() {
+        segmented.setTitle("用户应用 \(userCount)", forSegmentAt: 0)
+        segmented.setTitle("系统应用 \(systemCount)", forSegmentAt: 1)
     }
-    @objc private func toggleFilter() {
-        showSystem.toggle(); updateFilterButton(); applyFilter()
+
+    @objc private func segmentChanged() {
+        applyFilter()
     }
 
     @objc private func load() {
@@ -79,19 +113,18 @@ final class AppsViewController: UIViewController {
                 for line in allOut.split(separator: "\n") {
                     let s = line.trimmingCharacters(in: .whitespaces)
                     guard s.hasPrefix("package:") else { continue }
-                    // 格式：package:<路径>=<包名>。用最后一个 "=" 分割，避免路径中带 "=" 时错位。
                     guard let eq = s.lastIndex(of: "=") else { continue }
                     let path = String(s[s.index(s.startIndex, offsetBy: 8)..<eq])
                     let pkg = String(s[s.index(after: eq)...])
                     if pkg.isEmpty || path.isEmpty { continue }
                     sawPathedLine = true
+                    let isSystem = sysPrefix.contains { path.hasPrefix($0) }
                     let cached = AppLabelResolver.cachedLabel(pkg: pkg, apkPath: path)
                     result.append(AppInfo(pkg: pkg, path: path, name: cached ?? pkg,
-                                          versionName: "", isSystem: sysPrefix.contains { path.hasPrefix($0) },
+                                          versionName: "", isSystem: isSystem,
                                           isDisabled: disabled.contains(pkg)))
                 }
-                // 兜底：部分固件的 -f 不带 APK 路径（package:com.xxx 无 "="），
-                // 上面解析会得到 0 项。回退用纯包名格式再解析一次。
+                // 部分固件 -f 不带路径，回退纯包名；path 为空时解析阶段会用 pm path 补齐。
                 if !sawPathedLine {
                     let plainOut = (try? client.shell("pm list packages", timeout: 90)) ?? ""
                     for line in plainOut.split(separator: "\n") {
@@ -104,28 +137,37 @@ final class AppsViewController: UIViewController {
                                               isDisabled: disabled.contains(pkg)))
                     }
                 }
-                client.disconnect()
-            } catch { err = error.localizedDescription; client.disconnect() }
-            let sorted = result.sorted { l, r in
-                if l.name != l.pkg && r.name == r.pkg { return true }
-                if l.name == l.pkg && r.name != r.pkg { return false }
-                return l.name.localizedStandardCompare(r.name) == .orderedAscending
+            } catch {
+                err = error.localizedDescription
             }
+            let sorted = sortApps(result)
             DispatchQueue.main.async {
                 self.apps = sorted
+                self.userCount = sorted.filter { !$0.isSystem }.count
+                self.systemCount = sorted.filter { $0.isSystem }.count
+                self.updateSegmentTitles()
                 self.applyFilter()
-                self.statusLabel.text = result.isEmpty ? (err.isEmpty ? "未读取到应用" : err) : "共 \(result.count) 个应用 · 正在解析名称…"
+                self.statusLabel.text = result.isEmpty
+                    ? (err.isEmpty ? "未读取到应用" : err)
+                    : "共 \(result.count) 个应用 · 正在加载名称与图标…"
                 self.refresh.endRefreshing()
-                self.resolveLabelsIfNeeded()
+                self.resolveAssetsIfNeeded()
             }
         }
     }
 
-    /// 异步从 APK 解析应用显示名（优先中文）。只处理尚未缓存、且有 APK 路径的应用，
-    /// 用户应用优先，单批最多 80 个，避免大批量应用把电视/file IO 拖慢。
-    private func resolveLabelsIfNeeded() {
-        let pending = apps.filter { $0.name == $0.pkg && !$0.path.isEmpty }
-        let targets = Array((pending.filter { !$0.isSystem } + pending.filter { $0.isSystem }).prefix(80))
+    private func sortApps(_ list: [AppInfo]) -> [AppInfo] {
+        list.sorted { l, r in
+            if l.name != l.pkg && r.name == r.pkg { return true }
+            if l.name == l.pkg && r.name != r.pkg { return false }
+            return l.name.localizedStandardCompare(r.name) == .orderedAscending
+        }
+    }
+
+    /// 逐个解析应用名与图标，每解析一个就回主线程刷新，用户无需等全部完成。
+    private func resolveAssetsIfNeeded() {
+        let pending = apps.filter { $0.name == $0.pkg || AppLabelResolver.cachedIcon(pkg: $0.pkg) == nil }
+        let targets = Array((pending.filter { !$0.isSystem } + pending.filter { $0.isSystem }).prefix(240))
         guard !targets.isEmpty else {
             if !apps.isEmpty { statusLabel.text = "共 \(apps.count) 个应用 · 点按管理" }
             return
@@ -134,33 +176,47 @@ final class AppsViewController: UIViewController {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let client = AdbClient()
-            var resolved: [String: String] = [:]
+            var connected = false
             do {
                 try client.connect(host: self.host.ip, port: self.host.port)
-                for app in targets {
-                    if let name = AppLabelResolver.label(for: app.pkg, apkPath: app.path, client: client),
-                       name != app.pkg {
-                        resolved[app.pkg] = name
+                connected = true
+            } catch {
+                AdbLog.log("应用资源解析连接失败：\(error.localizedDescription)", level: "W")
+            }
+            var done = 0
+            var ok = 0
+            for app in targets {
+                guard connected else { break }
+                let assets = AppLabelResolver.assets(for: app.pkg, apkPath: app.path, client: client)
+                done += 1
+                if assets.label != nil || assets.iconData != nil { ok += 1 }
+                if assets.label != nil || assets.iconData != nil {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.apps = self.apps.map { item in
+                            var copy = item
+                            if item.pkg == app.pkg, let label = assets.label { copy.name = label }
+                            return copy
+                        }
+                        self.apps = self.sortApps(self.apps)
+                        self.applyFilter()
                     }
                 }
-                client.disconnect()
-            } catch {
-                client.disconnect()
-                AdbLog.log("应用名解析中断：\(error.localizedDescription)", level: "W")
-            }
-            guard !resolved.isEmpty else { return }
-            DispatchQueue.main.async {
-                self.apps = self.apps.map { app in
-                    var copy = app
-                    if let name = resolved[app.pkg] { copy.name = name }
-                    return copy
-                }.sorted { l, r in
-                    if l.name != l.pkg && r.name == r.pkg { return true }
-                    if l.name == l.pkg && r.name != r.pkg { return false }
-                    return l.name.localizedStandardCompare(r.name) == .orderedAscending
+                if done % 8 == 0 || done == targets.count {
+                    let finished = done
+                    let total = targets.count
+                    DispatchQueue.main.async { [weak self] in
+                        self?.statusLabel.text = "已加载 \(finished)/\(total) 个应用资源 · 成功 \(ok)"
+                    }
                 }
-                self.applyFilter()
-                self.statusLabel.text = "共 \(self.apps.count) 个应用 · 已解析 \(resolved.count) 个名称"
+            }
+            let allDone = done
+            let totalCount = targets.count
+            let totalApps = self.apps.count
+            DispatchQueue.main.async { [weak self] in
+                self?.statusLabel.text = allDone >= totalCount
+                    ? "共 \(totalApps) 个应用 · 点按管理"
+                    : "共 \(totalApps) 个应用 · 资源加载中断（已处理 \(allDone)/\(totalCount)）"
             }
         }
     }
@@ -168,25 +224,44 @@ final class AppsViewController: UIViewController {
     private func applyFilter() {
         let q = search.searchBar.text?.trimmed.lowercased() ?? ""
         filtered = apps.filter { app in
-            (showSystem || !app.isSystem) && (q.isEmpty || app.pkg.lowercased().contains(q) || app.name.lowercased().contains(q))
+            (showSystem || !app.isSystem)
+                && (q.isEmpty || app.pkg.lowercased().contains(q) || app.name.lowercased().contains(q))
         }
         tableView.reloadData()
+    }
+
+    /// 40×40 圆角占位图：用应用名首字，不依赖颜色单独区分。
+    private func placeholderImage(_ name: String) -> UIImage {
+        let size = CGSize(width: 40, height: 40)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            UIColor.tertiarySystemFill.setFill()
+            UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 9).fill()
+            let initial = String(name.prefix(1)).uppercased()
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.boldSystemFont(ofSize: 19),
+                .foregroundColor: UIColor.label,
+            ]
+            (initial as NSString).draw(in: CGRect(x: 0, y: 8, width: 40, height: 26), withAttributes: attrs)
+        }
     }
 
     private func perform(_ cmd: String, on app: AppInfo, successMsg: String) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            let client = AdbClient(); var out = ""; var err = ""
+            let client = AdbClient()
+            var err = ""
             do {
                 try client.connect(host: self.host.ip, port: self.host.port)
-                out = try client.shell(cmd, timeout: 60); client.disconnect()
-            } catch { err = error.localizedDescription; client.disconnect() }
+                _ = try client.shell(cmd, timeout: 60)
+            } catch {
+                err = error.localizedDescription
+            }
             DispatchQueue.main.async {
                 let ok = err.isEmpty
                 UIKitHelper.alert(ok ? "完成" : "失败", ok ? successMsg : err, in: self) {
                     if ok { self.load() }
                 }
-                _ = out
             }
         }
     }
@@ -221,6 +296,7 @@ final class AppsViewController: UIViewController {
 
 extension AppsViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { filtered.count }
+
     func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
         let a = filtered[indexPath.row]
@@ -228,10 +304,20 @@ extension AppsViewController: UITableViewDataSource, UITableViewDelegate {
         cfg.text = a.name
         cfg.secondaryText = a.pkg + (a.isSystem ? "  · 系统" : "") + (a.isDisabled ? "  · 已禁用" : "")
         cfg.secondaryTextProperties.color = a.isDisabled ? .systemOrange : .secondaryLabel
+        if let data = AppLabelResolver.cachedIcon(pkg: a.pkg), let image = UIImage(data: data) {
+            cfg.image = image.withRenderingMode(.alwaysOriginal)
+        } else {
+            cfg.image = placeholderImage(a.name)
+        }
+        cfg.imageProperties.renderingMode = .alwaysOriginal
+        cfg.imageProperties.maximumSize = CGSize(width: 40, height: 40)
+        cfg.imageProperties.cornerRadius = 9
         cell.contentConfiguration = cfg
         cell.accessoryType = .disclosureIndicator
+        cell.accessibilityLabel = "\(a.name)，\(a.pkg)\(a.isSystem ? "，系统应用" : "，用户应用")\(a.isDisabled ? "，已禁用" : "")"
         return cell
     }
+
     func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
         tv.deselectRow(at: indexPath, animated: true)
         menu(for: filtered[indexPath.row])

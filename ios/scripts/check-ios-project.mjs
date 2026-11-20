@@ -258,6 +258,14 @@ if (!proto.includes('AdbLog.log(')) fail('AdbProtocol 未接入运行日志（�
 if (proto.match(/AdbLog\.log/g).length < 15) fail('AdbProtocol 日志埋点不足（连接/握手/OPEN/shell/sync 均需覆盖）');
 if (!screenSrc.includes('UIImageWriteToSavedPhotosAlbum')) fail('屏幕页缺少保存到相册');
 if (!screenSrc.includes('while live')) fail('屏幕页缺少实时刷屏循环');
+const appsSrc = readFileSync(join(swiftDir, 'AppsViewController.swift'), 'utf8');
+const resolverSrc = readFileSync(join(swiftDir, 'AppLabelResolver.swift'), 'utf8');
+for (const needle of ['用户应用', '系统应用', 'cachedIcon', 'placeholderImage', 'resolveAssetsIfNeeded']) {
+  if (!appsSrc.includes(needle)) fail(`应用页缺少 ${needle}`);
+}
+for (const needle of ['iconId', 'entryName', 'findIcon', 'cacheIcon']) {
+  if (!resolverSrc.includes(needle)) fail(`应用资源解析缺少 ${needle}`);
+}
 if (!failed) ok('project.pbxproj 结构完整且引用全部源码');
 
 // ---------- ipa 构建脚本 ----------

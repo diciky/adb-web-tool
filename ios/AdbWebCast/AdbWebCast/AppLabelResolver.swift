@@ -1,29 +1,59 @@
 import Foundation
 import Compression
 
-/// 从已安装 APK 里解析应用显示名（优先中文），不依赖 Mac 侧 aapt。
+/// 从已安装 APK 解析应用显示名（优先中文）与启动图标，不依赖 Mac 侧 aapt。
 ///
-/// - 只读取 APK 中的 `AndroidManifest.xml` 与 `resources.arsc`；
-/// - 支持 stored / deflate 两种 ZIP 压缩方式；
-/// - 二进制 XML 取 `<application android:label>`；
-/// - 资源表按 zh-CN > zh > 默认 > 其他语言 的优先级解析字符串；
-/// - 解析结果缓存在 UserDefaults，避免重复拉包。
+/// - 一次 pull 同时拿到 `AndroidManifest.xml` / `resources.arsc` / 图标资源；
+/// - 二进制 XML 取 `<application android:label>` 与 `android:icon`；
+/// - 资源表按 zh-CN > zh > 默认 > 其他语言 解析字符串；
+/// - 图标从 `res/<type>-<density>/<name>.png|webp` 提取；
+/// - 结果本地缓存（名称 UserDefaults，图标 Caches 目录），避免重复拉包。
 enum AppLabelResolver {
 
     // MARK: - Public
 
-    /// 读取缓存；没有缓存时实时解析。失败返回 nil，调用方回退包名。
+    struct AssetResult {
+        let label: String?
+        let iconData: Data?
+    }
+
+    /// 解析单个应用。返回的名称为 nil 时调用方回退包名。
+    static func assets(for pkg: String, apkPath: String, client: AdbClient) -> AssetResult {
+        let labelCached = cachedLabel(pkg: pkg, apkPath: apkPath)
+        let iconCached = cachedIcon(pkg: pkg)
+        if labelCached != nil, iconCached != nil {
+            return AssetResult(label: labelCached, iconData: iconCached)
+        }
+        guard let result = resolve(pkg: pkg, apkPath: apkPath, client: client) else {
+            return AssetResult(label: labelCached, iconData: iconCached)
+        }
+        var finalLabel = labelCached
+        if finalLabel == nil, let label = result.label {
+            finalLabel = label
+            cacheLabel(label, pkg: pkg, apkPath: apkPath)
+        }
+        var finalIcon = iconCached
+        if finalIcon == nil, let icon = result.iconData {
+            finalIcon = icon
+            cacheIcon(icon, pkg: pkg)
+        }
+        return AssetResult(label: finalLabel, iconData: finalIcon)
+    }
+
+    /// 兼容旧调用：只取名称。
     static func label(for pkg: String, apkPath: String, client: AdbClient) -> String? {
-        if let cached = cache[cacheKey(pkg: pkg, apkPath: apkPath)] { return cached }
-        guard let name = resolve(pkg: pkg, apkPath: apkPath, client: client) else { return nil }
-        cache[cacheKey(pkg: pkg, apkPath: apkPath)] = name
-        saveCache()
-        return name
+        assets(for: pkg, apkPath: apkPath, client: client).label
     }
 
     /// 只查缓存，不触发网络/IO。用于首屏立刻显示名称。
     static func cachedLabel(pkg: String, apkPath: String) -> String? {
         cache[cacheKey(pkg: pkg, apkPath: apkPath)]
+    }
+
+    /// 只查图标缓存。
+    static func cachedIcon(pkg: String) -> Data? {
+        guard let url = iconURL(pkg: pkg) else { return nil }
+        return try? Data(contentsOf: url)
     }
 
     // MARK: - Cache
@@ -46,41 +76,85 @@ enum AppLabelResolver {
         }
     }
 
+    private static func cacheLabel(_ label: String, pkg: String, apkPath: String) {
+        cache[cacheKey(pkg: pkg, apkPath: apkPath)] = label
+        saveCache()
+    }
+
+    private static func iconDirectory() -> URL? {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        guard let base else { return nil }
+        let dir = base.appendingPathComponent("adbweb-app-icons", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
+    private static func iconURL(pkg: String) -> URL? {
+        guard let dir = iconDirectory() else { return nil }
+        let safe = pkg.replacingOccurrences(of: "/", with: "_")
+        return dir.appendingPathComponent("\(safe).icon")
+    }
+
+    private static func cacheIcon(_ data: Data, pkg: String) {
+        guard let url = iconURL(pkg: pkg) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
     // MARK: - Resolve
 
-    private static func resolve(pkg: String, apkPath: String, client: AdbClient) -> String? {
-        guard !apkPath.isEmpty else { return nil }
+    private static func resolve(pkg: String, apkPath: String, client: AdbClient) -> AssetResult? {
+        var path = apkPath
+        if path.isEmpty {
+            let out = (try? client.shell("pm path \(pkg)", timeout: 30)) ?? ""
+            if let line = out.split(separator: "\n").first(where: { $0.contains("package:") }) {
+                path = line.replacingOccurrences(of: "package:", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        guard !path.isEmpty else { return nil }
+
         let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("label_\(UUID().uuidString).apk")
+            .appendingPathComponent("asset_\(UUID().uuidString).apk")
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         do {
-            try client.pull(remotePath: apkPath, to: tmp, progress: { _ in })
+            try client.pull(remotePath: path, to: tmp, progress: { _ in })
             let size = (try? FileManager.default.attributesOfItem(atPath: tmp.path)[.size] as? NSNumber)?.intValue ?? 0
-            // 只解析小包，避免超大游戏包把手机内存吃满；超大包回退包名。
-            guard size > 0, size <= 96 * 1024 * 1024 else { return nil }
+            // 超大游戏包跳过，避免手机内存吃满；这类包回退包名与占位图标。
+            guard size > 0, size <= 160 * 1024 * 1024 else { return nil }
             guard let data = try? Data(contentsOf: tmp, options: .mappedIfSafe) else { return nil }
             let bytes = Bytes(data)
             let entries = zipEntries(bytes)
             guard let manifestData = extract("AndroidManifest.xml", from: bytes, entries: entries),
-                  let manifestLabel = findLabel(in: manifestData) else { return nil }
+                  let info = manifestInfo(in: manifestData) else { return nil }
 
-            switch manifestLabel {
+            var label: String?
+            switch info.label {
             case .string(let value):
-                return cleanLabel(value)
+                label = cleanLabel(value)
             case .reference(let id):
-                guard let arsc = extract("resources.arsc", from: bytes, entries: entries) else { return nil }
-                return resolveReference(id, in: arsc).flatMap(cleanLabel)
+                guard let arsc = extract("resources.arsc", from: bytes, entries: entries) else {
+                    label = nil
+                    break
+                }
+                label = resolveReference(id, in: arsc).flatMap(cleanLabel)
+            case .none:
+                label = nil
             }
+
+            let icon = findIcon(iconId: info.iconId, bytes: bytes, entries: entries)
+            return AssetResult(label: label, iconData: icon)
         } catch {
-            AdbLog.log("解析应用名失败 \(pkg): \(error.localizedDescription)", level: "W")
+            AdbLog.log("解析应用资源失败 \(pkg): \(error.localizedDescription)", level: "W")
             return nil
         }
     }
 
     private static func cleanLabel(_ raw: String) -> String? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 部分旧工具链会把 UTF-16LE 标签按单字节解码，字符之间夹 0x00。
+        // 旧工具链可能把 UTF-16LE 按单字节解码，字符之间夹 0x00。
         if s.contains("\u{0}") {
             let scalarBytes = Array(s.utf8)
             if let fixed = String(bytes: scalarBytes, encoding: .utf16LittleEndian) {
@@ -98,7 +172,12 @@ enum AppLabelResolver {
         case reference(UInt32)
     }
 
-    private static func findLabel(in xml: Data) -> ManifestLabel? {
+    private struct ManifestInfo {
+        var label: ManifestLabel?
+        var iconId: UInt32?
+    }
+
+    private static func manifestInfo(in xml: Data) -> ManifestInfo? {
         let b = Bytes(xml)
         guard b.has(0, 8), b.u16(0) == 0x0003 else { return nil }
         var pool: StringPool?
@@ -115,8 +194,8 @@ enum AppLabelResolver {
                 pool = StringPool(b, offset: offset, chunkSize: chunkSize)
             } else if type == 0x0102 {
                 if let pool = pool,
-                   let label = applicationLabel(in: b, at: offset, headerSize: headerSize, pool: pool) {
-                    return label
+                   let info = applicationInfo(in: b, at: offset, headerSize: headerSize, pool: pool) {
+                    return info
                 }
             }
             offset += chunkSize
@@ -124,8 +203,8 @@ enum AppLabelResolver {
         return nil
     }
 
-    private static func applicationLabel(in b: Bytes, at offset: Int, headerSize: Int,
-                                         pool: StringPool) -> ManifestLabel? {
+    private static func applicationInfo(in b: Bytes, at offset: Int, headerSize: Int,
+                                        pool: StringPool) -> ManifestInfo? {
         guard b.has(offset + 24, 8) else { return nil }
         let nameIndex = Int(b.u32(offset + 20))
         guard pool.strings.indices.contains(nameIndex), pool.strings[nameIndex] == "application" else { return nil }
@@ -135,25 +214,27 @@ enum AppLabelResolver {
         let attrCount = Int(b.u16(offset + 28))
         guard attrSize >= 20 else { return nil }
         var p = offset + headerSize + attrStart
+        var info = ManifestInfo()
         for _ in 0..<attrCount {
-            guard b.has(p, 20) else { return nil }
+            guard b.has(p, 20) else { break }
             let nameIndex = Int(b.u32(p + 4))
             let rawValue = b.u32(p + 8)
             let dataType = b.u8(p + 15)
             let data = b.u32(p + 16)
             let attrName = pool.strings.indices.contains(nameIndex) ? pool.strings[nameIndex] : ""
             if attrName == "label" {
-                if dataType == 0x01 { return .reference(data) }   // TYPE_REFERENCE
-                if dataType == 0x03, pool.strings.indices.contains(Int(data)) {
-                    return .string(pool.strings[Int(data)])       // TYPE_STRING
+                if dataType == 0x01 { info.label = .reference(data) }
+                else if dataType == 0x03, pool.strings.indices.contains(Int(data)) {
+                    info.label = .string(pool.strings[Int(data)])
+                } else if rawValue != 0xFFFFFFFF, pool.strings.indices.contains(Int(rawValue)) {
+                    info.label = .string(pool.strings[Int(rawValue)])
                 }
-                if rawValue != 0xFFFFFFFF, pool.strings.indices.contains(Int(rawValue)) {
-                    return .string(pool.strings[Int(rawValue)])
-                }
+            } else if attrName == "icon" {
+                if dataType == 0x01 { info.iconId = data }
             }
             p += attrSize
         }
-        return nil
+        return info.label == nil && info.iconId == nil ? nil : info
     }
 
     // MARK: - resources.arsc
@@ -233,7 +314,7 @@ enum AppLabelResolver {
         guard b.has(entryPos, 4) else { return nil }
         let entrySize = Int(b.u16(entryPos))
         let flags = b.u16(entryPos + 2)
-        guard flags & 0x0001 == 0 else { return nil }  // complex entry 不直接含字符串
+        guard flags & 0x0001 == 0 else { return nil }
         let valuePos = entryPos + entrySize
         guard b.has(valuePos, 8) else { return nil }
         let dataType = b.u8(valuePos + 3)
@@ -270,20 +351,134 @@ enum AppLabelResolver {
         return out
     }
 
+    /// 资源 id → `类型/条目名`，例如 0x7f0e0000 → "mipmap/ic_launcher"。
+    private static func entryName(for id: UInt32, in arsc: Data) -> String? {
+        let b = Bytes(arsc)
+        guard b.has(0, 8), b.u16(0) == 0x0002 else { return nil }
+        let tableSize = min(b.count, Int(b.u32(4)))
+        var offset = Int(b.u16(2))
+        while b.has(offset, 8), offset + 8 <= tableSize {
+            let type = b.u16(offset)
+            let chunkSize = Int(b.u32(offset + 4))
+            guard chunkSize >= 8, offset + chunkSize <= tableSize else { break }
+            if type == 0x0200, b.u32(offset + 8) == (id >> 24) {
+                guard b.has(offset + 288, 4) else { return nil }
+                let typeStrings = offset + Int(b.u32(offset + 268))
+                let keyStrings = offset + Int(b.u32(offset + 276))
+                guard let typePool = StringPool(b, offset: typeStrings, chunkSize: 0),
+                      let keyPool = StringPool(b, offset: keyStrings, chunkSize: 0) else { return nil }
+                let typeIndex = Int((id >> 16) & 0xFF) - 1
+                let entryIndex = Int(id & 0xFFFF)
+                guard typePool.strings.indices.contains(typeIndex) else { return nil }
+
+                // 资源 ID 的 entry 序号并不是 key 字符串池下标；
+                // 真正的 key.index 存在 ResTable_entry 的 +4 处。
+                var typeOffset = offset + max(Int(b.u16(offset + 2)), 288)
+                let packageEnd = offset + chunkSize
+                while b.has(typeOffset, 8), typeOffset + 8 <= packageEnd {
+                    let t = b.u16(typeOffset)
+                    let tSize = Int(b.u32(typeOffset + 4))
+                    guard tSize >= 8, typeOffset + tSize <= packageEnd else { break }
+                    if t == 0x0201, Int(b.u8(typeOffset + 8)) == Int((id >> 16) & 0xFF) {
+                        let entryCount = Int(b.u32(typeOffset + 12))
+                        let entriesStart = Int(b.u32(typeOffset + 16))
+                        if entryIndex < entryCount {
+                            let table = typeOffset + Int(b.u16(typeOffset + 2))
+                            if b.has(table + entryIndex * 4, 4) {
+                                let entryOffset = Int(b.u32(table + entryIndex * 4))
+                                if entryOffset != 0xFFFFFFFF {
+                                    let entryPos = typeOffset + entriesStart + entryOffset
+                                    if b.has(entryPos + 8, 4) {
+                                        let keyIndex = Int(b.u32(entryPos + 4))
+                                        if keyPool.strings.indices.contains(keyIndex) {
+                                            return typePool.strings[typeIndex] + "/" + keyPool.strings[keyIndex]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    typeOffset += tSize
+                }
+            }
+            offset += chunkSize
+        }
+        return nil
+    }
+
+    // MARK: - Icon
+
+    private static func findIcon(iconId: UInt32?, bytes: Bytes,
+                                 entries: [String: ZipEntry]) -> Data? {
+        var candidates: [String] = []
+        let densities = ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi", "ldpi", "anydpi", "nodpi", ""]
+
+        if let iconId = iconId,
+           let name = entryName(for: iconId, in: Data(bytes.bytes)),
+           let slash = name.firstIndex(of: "/") {
+            let type = String(name[..<slash])
+            let key = String(name[name.index(after: slash)...])
+            for ext in ["png", "webp", "jpg"] {
+                for density in densities {
+                    let dir = density.isEmpty ? "res/\(type)" : "res/\(type)-\(density)"
+                    candidates.append("\(dir)/\(key).\(ext)")
+                }
+            }
+            // 自适应图标：前景/背景单独存图，优先前景。
+            for density in densities {
+                let dir = density.isEmpty ? "res/\(type)" : "res/\(type)-\(density)"
+                candidates.append("\(dir)/\(key)_foreground.png")
+                candidates.append("\(dir)/\(key)_background.png")
+            }
+        }
+        // 兜底：常见启动图标文件名。
+        for key in ["ic_launcher", "app_icon", "launcher_icon", "icon"] {
+            for type in ["mipmap", "drawable"] {
+                for density in densities {
+                    let dir = density.isEmpty ? "res/\(type)" : "res/\(type)-\(density)"
+                    candidates.append("\(dir)/\(key).png")
+                }
+            }
+        }
+        for name in candidates {
+            if let data = extract(name, from: bytes, entries: entries), data.count > 64 {
+                return data
+            }
+        }
+        // 二次兜底：固件常见 res/drawable-xhdpi-v4/ic_launcher.png 这类带版本后缀的目录，
+        // 以及自适应图标 ic_launcher_foreground.png。按条目名模糊匹配。
+        if let iconId = iconId,
+           let name = entryName(for: iconId, in: Data(bytes.bytes)),
+           let slash = name.firstIndex(of: "/") {
+            let type = String(name[..<slash])
+            let key = String(name[name.index(after: slash)...])
+            let keys = [key, key + "_foreground"]
+            for entryName in entries.keys where entryName.hasPrefix("res/\(type)")
+                && (entryName.hasSuffix(".png") || entryName.hasSuffix(".webp")) {
+                let file = (entryName as NSString).lastPathComponent
+                let base = (file as NSString).deletingPathExtension
+                if keys.contains(base), let data = extract(entryName, from: bytes, entries: entries), data.count > 64 {
+                    return data
+                }
+            }
+        }
+        return nil
+    }
+
     // MARK: - String pool
 
     private struct StringPool {
         let strings: [String]
 
         init?(_ b: Bytes, offset: Int, chunkSize: Int) {
-            guard b.has(offset + 20, 4) else { return nil }
+            guard b.has(offset + 24, 4) else { return nil }
             let count = Int(b.u32(offset + 8))
             let flags = b.u32(offset + 16)
             let stringsStart = Int(b.u32(offset + 20))
             let headerSize = max(Int(b.u16(offset + 2)), 28)
             let utf8 = (flags & 0x100) != 0
             let base = offset + headerSize
-            guard b.has(base, count * 4) else { return nil }
+            guard count >= 0, count < 200_000, b.has(base, count * 4) else { return nil }
 
             var result: [String] = []
             result.reserveCapacity(count)
@@ -292,15 +487,18 @@ enum AppLabelResolver {
                 var p = offset + stringsStart + relative
                 guard b.has(p, 2) else { result.append(""); continue }
                 if utf8 {
-                    p += 2  // UTF-16 长度，字节长度单独编码
-                    guard b.has(p, 1) else { result.append(""); continue }
-                    var len = Int(b.u8(p)); p += 1
-                    if len & 0x80 != 0 {
+                    var charLen = Int(b.u8(p)); p += 1
+                    if charLen & 0x80 != 0 {
                         guard b.has(p, 1) else { result.append(""); continue }
-                        len = ((len & 0x7F) << 8) | Int(b.u8(p)); p += 1
+                        charLen = ((charLen & 0x7F) << 8) | Int(b.u8(p)); p += 1
                     }
-                    guard b.has(p, len) else { result.append(""); continue }
-                    result.append(String(bytes: Array(b.bytes[p..<(p + len)]), encoding: .utf8) ?? "")
+                    var byteLen = Int(b.u8(p)); p += 1
+                    if byteLen & 0x80 != 0 {
+                        guard b.has(p, 1) else { result.append(""); continue }
+                        byteLen = ((byteLen & 0x7F) << 8) | Int(b.u8(p)); p += 1
+                    }
+                    guard b.has(p, byteLen) else { result.append(""); continue }
+                    result.append(String(bytes: Array(b.bytes[p..<(p + byteLen)]), encoding: .utf8) ?? "")
                 } else {
                     let len = Int(b.u16(p)); p += 2
                     guard b.has(p, len * 2) else { result.append(""); continue }
@@ -349,8 +547,7 @@ enum AppLabelResolver {
             let name = String(decoding: nameBytes, as: UTF8.self)
             entries[name] = ZipEntry(method: method, compressedSize: csize,
                                      uncompressedSize: usize, localOffset: local)
-            let nextOffset = offset + 46 + nameLen + extraLen + commentLen
-            offset = nextOffset
+            offset += 46 + nameLen + extraLen + commentLen
         }
         return entries
     }
