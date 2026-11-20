@@ -291,6 +291,24 @@ final class AdbClient {
             Self.connectedKey = key
         } catch {
             Self.connectedKey = ""
+            // 半开连接兜底：复用判定（isValid）检测不出"iOS 杀后台 TCP / 电视 adbd 重启"
+            // 留下的死连接，首次握手会以网络错误失败。拆掉重连、重新握手一次——
+            // 已授权电视 <1s 完成，等价 adb server 的传输自动重启。
+            if case AdbError.ioError = error {
+                Self.sharedSocket.closeSocket()
+                Self.packetStore.removeAll()
+                Self.deviceMaxData = 4096
+                do {
+                    postStage("检测到旧连接已失效，正在自动重连…")
+                    try Self.sharedSocket.connect(host: host, port: port)
+                    try handshake()
+                    Self.connectedKey = key
+                    return
+                } catch {
+                    Self.connectedKey = ""
+                    throw error
+                }
+            }
             throw error
         }
     }
