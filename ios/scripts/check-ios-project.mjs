@@ -39,6 +39,9 @@ const required = [
   'AdbWebCast/AdbWebCast/ScreenViewController.swift',
   'AdbWebCast/AdbWebCast/AppLabelResolver.swift',
   'AdbWebCast/AdbWebCast/TextInputViewController.swift',
+  'AdbWebCast/AdbWebCast/HealthViewController.swift',
+  'AdbWebCast/AdbWebCast/ScheduleStore.swift',
+  'AdbWebCast/AdbWebCast/ScheduleViewController.swift',
   'AdbWebCast/AdbWebCast/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png',
   'AdbWebCast/AdbWebCast/Assets.xcassets/AppIcon.appiconset/Contents.json',
   'AdbWebCast/AdbWebCast/Info.plist',
@@ -228,7 +231,7 @@ for (const hidden of ['wrap(autostart', 'wrap(batch', 'wrap(tools']) {
   if (homeSrc.includes(hidden)) fail(`「${hidden.slice(5)}」不应再作为独立 Tab（已移入设备页宫格）`);
 }
 const infoSrc = readFileSync(join(swiftDir, 'InfoViewController.swift'), 'utf8');
-for (const needle of ['ShellViewController(host:', 'AutostartViewController(host:', 'BatchViewController(host:', 'LogViewerViewController()', 'ScreenViewController(host:', 'powerAction', 'TextInputViewController(host:']) {
+for (const needle of ['ShellViewController(host:', 'AutostartViewController(host:', 'BatchViewController(host:', 'LogViewerViewController()', 'ScreenViewController(host:', 'powerAction', 'TextInputViewController(host:', 'HealthViewController(host:', 'ScheduleViewController(host:']) {
   if (!infoSrc.includes(needle)) fail(`设备页宫格缺少入口 ${needle}`);
 }
 // v3.3.0：文字输入与剪贴板合并为 TextInputViewController，ShellViewController 只保留 shell
@@ -237,6 +240,15 @@ if (toolsSrc.includes('ScreenViewController(host:')) fail('Shell 页不应再折
 if (toolsSrc.includes('screencap') && toolsSrc.includes('实时查看')) fail('Shell 页不应再折叠屏幕入口');
 const screenSrc = readFileSync(join(swiftDir, 'ScreenViewController.swift'), 'utf8');
 if (!/consecutiveFails\s*>=\s*5/.test(screenSrc)) fail('实时屏幕必须失败退避并在连续失败后熔断（不能 0.15s 高频重试打爆电视）');
+// v3.4.0：健康监控 + 定时任务（对齐 Web 端，端上直连 ADB 实现）
+const healthSrc = readFileSync(join(swiftDir, 'HealthViewController.swift'), 'utf8');
+for (const needle of ['cat /proc/stat', 'cat /proc/meminfo', 'df -P', 'dumpsys battery', 'dumpsys wifi', 'maxPoints = 60', 'ping -c 4', 'push(localURL:', 'pull(remotePath:']) {
+  if (!healthSrc.includes(needle)) fail(`HealthViewController.swift 缺少 ${needle}`);
+}
+const schedSrc = readFileSync(join(swiftDir, 'ScheduleStore.swift'), 'utf8');
+for (const needle of ['computeNext', 'fieldMatch', 'intervalSec', 'cron', 'func execute', 'scheduleJobsChanged', 'startTicking']) {
+  if (!schedSrc.includes(needle)) fail(`ScheduleStore.swift 缺少 ${needle}`);
+}
 // v3.0.0：运行日志系统
 const helpersSrc = readFileSync(join(swiftDir, 'UIHelpers.swift'), 'utf8');
 for (const needle of ['enum AdbLog', 'static func log(', 'static func dump()', 'class LogViewerViewController']) {

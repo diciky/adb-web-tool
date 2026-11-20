@@ -29,6 +29,9 @@
 		AA000000000000000000001C /* AppLabelResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001C /* AppLabelResolver.swift */; };
 		AA000000000000000000001D /* TextInputViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001D /* TextInputViewController.swift */; };
 		AA000000000000000000001E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001E /* Assets.xcassets */; };
+		AA000000000000000000001F /* HealthViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001F /* HealthViewController.swift */; };
+		AA0000000000000000000020 /* ScheduleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000020 /* ScheduleStore.swift */; };
+		AA0000000000000000000021 /* ScheduleViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000021 /* ScheduleViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -56,6 +59,9 @@
 		BB000000000000000000001C /* AppLabelResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLabelResolver.swift; sourceTree = "<group>"; };
 		BB000000000000000000001D /* TextInputViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextInputViewController.swift; sourceTree = "<group>"; };
 		BB000000000000000000001E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		BB000000000000000000001F /* HealthViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000020 /* ScheduleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleStore.swift; sourceTree = "<group>"; };
+		BB0000000000000000000021 /* ScheduleViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -101,6 +107,9 @@
 				BB000000000000000000001C /* AppLabelResolver.swift */,
 				BB000000000000000000001D /* TextInputViewController.swift */,
 				BB000000000000000000001E /* Assets.xcassets */,
+				BB000000000000000000001F /* HealthViewController.swift */,
+				BB0000000000000000000020 /* ScheduleStore.swift */,
+				BB0000000000000000000021 /* ScheduleViewController.swift */,
 				BB0000000000000000000003 /* LaunchScreen.storyboard */,
 				BB0000000000000000000004 /* Info.plist */,
 			);
@@ -205,6 +214,9 @@
 				AA000000000000000000001B /* ScreenViewController.swift in Sources */,
 				AA000000000000000000001C /* AppLabelResolver.swift in Sources */,
 				AA000000000000000000001D /* TextInputViewController.swift in Sources */,
+				AA000000000000000000001F /* HealthViewController.swift in Sources */,
+				AA0000000000000000000020 /* ScheduleStore.swift in Sources */,
+				AA0000000000000000000021 /* ScheduleViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -260,7 +272,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdbWebCast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -268,7 +280,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.3.1;
+				MARKETING_VERSION = 3.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cool.cnb.adbweb.console;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -282,7 +294,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdbWebCast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -290,7 +302,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.3.1;
+				MARKETING_VERSION = 3.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cool.cnb.adbweb.console;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
