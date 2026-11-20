@@ -732,39 +732,102 @@ final class AdbClient {
     }
 
     /// 列目录（sync LIST → DENT/DONE）。断线自动重连重试一次。
+    /// sync LIST 在部分固件（VIDAA 等）上有 adbd 怪癖：通道可开、WRTE 全部 ACK，
+    /// 但 sync 服务对 LIST 永不响应（SEND 推送却正常）。记下这些主机，后续直接走 shell。
+    private static var syncListBrokenHosts: Set<String> = []
+
     func listDir(_ path: String) throws -> [RemoteFile] {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
-        return try withAutoReconnect {
-            socket.setReadTimeout(90)
-            let (local, remote) = try openSync()
-            defer { closeChannel(local: local, remote: remote) }
-            AdbLog.log("LIST \(path)")
-            try sendSyncFrame("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
-            var result: [RemoteFile] = []
-            AdbLog.log("LIST 开始等待响应…")
-            while let (id, body) = try receiveSyncPacket(local: local, remote: remote) {
-                if id == "DONE" { break }
-                if id == "FAIL" {
-                    throw AdbError.commandFailed("读取目录失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
-                }
-                guard id == "DENT", body.count >= 16 else { continue }
-                let mode = body.u32le(0)
-                let size = Int64(body.u32le(4))
-                let mtime = body.u32le(8)
-                let nameLen = Int(body.u32le(12))
-                let name = nameLen > 0 && body.count >= 16 + nameLen
-                    ? String(data: body.subdata(in: 16..<(16 + nameLen)), encoding: .utf8) ?? ""
-                    : ""
-                if name.isEmpty || name == "." || name == ".." { continue }
-                result.append(RemoteFile(name: name, path: path.hasSuffix("/") ? path + name : path + "/" + name,
-                                          isDir: (mode & 0o170000) == 0o040000, size: size,
-                                          mtime: Date(timeIntervalSince1970: Double(mtime)), mode: mode))
+        let hostKey = Self.connectedKey
+        if !Self.syncListBrokenHosts.contains(hostKey) {
+            do {
+                return try withAutoReconnect { try listDirViaSync(path) }
+            } catch let e as AdbError {
+                // 仅对「sync 服务零响应超时」切换 shell 兜底；FAIL（权限等）照常抛出
+                guard case .protocolError = e, Self.lastHost != nil else { throw e }
+                Self.syncListBrokenHosts.insert(hostKey)
+                AdbLog.log("sync LIST 无响应（设备 adbd 怪癖），已切换 shell 列目录并对该主机记忆", level: "W")
             }
-            AdbLog.log("LIST 完成：\(result.count) 项")
-            return result.sorted { l, r in
-                if l.isDir != r.isDir { return l.isDir }
-                return l.name < r.name
+        }
+        return try shellListDir(path)
+    }
+
+    /// sync LIST 实现（8 秒短超时，失败立刻切兜底而不是干等 90 秒）
+    private func listDirViaSync(_ path: String) throws -> [RemoteFile] {
+        socket.setReadTimeout(8)
+        let (local, remote) = try openSync()
+        defer { closeChannel(local: local, remote: remote) }
+        AdbLog.log("LIST \(path)")
+        try sendSyncFrame("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
+        var result: [RemoteFile] = []
+        AdbLog.log("LIST 开始等待响应…")
+        while let (id, body) = try receiveSyncPacket(local: local, remote: remote) {
+            if id == "DONE" { break }
+            if id == "FAIL" {
+                throw AdbError.commandFailed("读取目录失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
             }
+            guard id == "DENT", body.count >= 16 else { continue }
+            let mode = body.u32le(0)
+            let size = Int64(body.u32le(4))
+            let mtime = body.u32le(8)
+            let nameLen = Int(body.u32le(12))
+            let name = nameLen > 0 && body.count >= 16 + nameLen
+                ? String(data: body.subdata(in: 16..<(16 + nameLen)), encoding: .utf8) ?? ""
+                : ""
+            if name.isEmpty || name == "." || name == ".." { continue }
+            result.append(RemoteFile(name: name, path: path.hasSuffix("/") ? path + name : path + "/" + name,
+                                      isDir: (mode & 0o170000) == 0o040000, size: size,
+                                      mtime: Date(timeIntervalSince1970: Double(mtime)), mode: mode))
+        }
+        AdbLog.log("LIST 完成：\(result.count) 项")
+        return result.sorted { l, r in
+            if l.isDir != r.isDir { return l.isDir }
+            return l.name < r.name
+        }
+    }
+
+    /// shell 列目录兜底：shell 通道在这批电视上 100% 可靠。
+    /// 首选 stat -c（toybox/busybox 都支持，一次拿全类型/大小/mtime，且 name 在最后一列可含 | 与空格）；
+    /// 输出为空再退回 ls -ap（目录名带 "/" 后缀，仅名与目录标志）。
+    private func shellListDir(_ path: String) throws -> [RemoteFile] {
+        socket.setReadTimeout(30)
+        let q = path.replacingOccurrences(of: "'", with: "'\\''")
+        AdbLog.log("shell LIST 兜底 \(path)")
+        let out = try shell("find '\(q)' -maxdepth 1 -mindepth 1 -exec stat -L -c \"%F|%s|%Y|%n\" {} + 2>/dev/null", timeout: 30)
+        var result: [RemoteFile] = []
+        for line in out.split(separator: "\n", omittingEmptySubsequences: true) {
+            // name 在最后一列，用 maxSplit=3 切分，文件名里含 "|" 也安全
+            let parts = line.split(separator: "|", maxSplits: 3, omittingEmptySubsequences: false)
+            guard parts.count == 4 else { continue }
+            let kind = String(parts[0])
+            let size = Int64(parts[1]) ?? 0
+            let mtime = TimeInterval(parts[2]) ?? 0
+            let full = String(parts[3])
+            let name = full.split(separator: "/").last.map(String.init) ?? full
+            if name.isEmpty { continue }
+            result.append(RemoteFile(name: name, path: full,
+                                      isDir: kind.contains("directory"), size: size,
+                                      mtime: Date(timeIntervalSince1970: mtime), mode: 0))
+        }
+        if result.isEmpty {
+            // 极老固件 find/stat 不全 → ls -ap：目录带 "/" 后缀
+            let lsOut = (try? shell("ls -ap '\(q)' 2>/dev/null", timeout: 20)) ?? ""
+            for line in lsOut.split(separator: "\n", omittingEmptySubsequences: true) {
+                var name = String(line)
+                guard name != "./", name != "../" else { continue }
+                let isDir = name.hasSuffix("/")
+                if isDir { name.removeLast() }
+                if name.isEmpty { continue }
+                result.append(RemoteFile(name: name,
+                                          path: path.hasSuffix("/") ? path + name : path + "/" + name,
+                                          isDir: isDir, size: 0,
+                                          mtime: Date(), mode: 0))
+            }
+        }
+        AdbLog.log("shell LIST 完成：\(result.count) 项")
+        return result.sorted { l, r in
+            if l.isDir != r.isDir { return l.isDir }
+            return l.name < r.name
         }
     }
 

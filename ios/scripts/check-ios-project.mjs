@@ -128,6 +128,11 @@ if (!/setReadTimeout\(35\)/.test(proto)) fail('握手未分级超时（等 TV �
 if (!proto.includes('readSyncBytes')) fail('缺少 readSyncBytes（sync 必须按字节流解析，黏包/跨帧安全）');
 if (!proto.includes('syncBuffer.removeSubrange')) fail('sync 字节流缓冲未消费');
 if (!proto.includes('while let (id, body) = try receiveSyncPacket')) fail('listDir/pull 未改为流式 while let 消费');
+// v3.2.0：sync LIST 无响应的设备（VIDAA adbd 怪癖）必须有 shell 列目录兜底
+if (!proto.includes('syncListBrokenHosts')) fail('缺少 sync LIST 失效主机记忆（无响应设备需永久切换 shell 列目录）');
+if (!proto.includes('shellListDir')) fail('缺少 shellListDir 兜底（sync LIST 零响应设备无法列目录）');
+if (!proto.includes('stat -L -c')) fail('shell 列目录应优先 stat -c（类型/大小/mtime 一次取全）');
+if (!proto.includes('ls -ap')) fail('shell 列目录缺少 ls -ap 二级兜底（极老固件 find/stat 不全）');
 if (!proto.includes('syncBuffer.removeAll()')) fail('openSync 未重置 sync 流缓冲（重试后残留半包会污染新通道）');
 if (!proto.includes('pm install -r -d')) fail('安装命令缺 -d（不允许降级会在装低版本时报 VERSION_DOWNGRADE）');
 if (!proto.includes('installErrorHints')) fail('缺少安装错误码中文翻译');
