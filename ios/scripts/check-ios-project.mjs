@@ -265,13 +265,17 @@ for (const needle of ['用户应用', '系统应用', 'cachedIcon', 'placeholder
   if (!appsSrc.includes(needle)) fail(`应用页缺少 ${needle}`);
 }
 for (const needle of ['iconId', 'entryName', 'findIcon', 'saveIcon', 'applicationSupportDirectory',
-                      'adbweb.app.assets.v2', 'isResolved', 'cached(pkg:', 'cacheQueue']) {
+                      'adbweb.app.assets.v3', 'isResolved', 'cached(pkg:', 'cacheQueue', 'needsIcon',
+                      '三次兜底', 'uncompressedSize']) {
   if (!resolverSrc.includes(needle)) fail(`应用资源解析/缓存缺少 ${needle}`);
 }
 // v3.4.2：自启管理必须一次全量 dumpsys + 从 Package[...] 段取包名，禁止再切路径（路径 hash 的 == 会污染包名）
+// v3.6.0：全量 dumpsys 实际没有 Package[...] 分段，改为解析 BOOT_COMPLETED: 下的组件行，
+//         并用 pm list packages -f 仅取 /data 用户包做过滤（不是切包名，另有 packageName(from:) fallback）。
 const autoSrc = readFileSync(join(swiftDir, 'AutostartViewController.swift'), 'utf8');
 for (const needle of ['dumpsys package', 'parseAutostart', 'packageName(from:', 'BOOT_COMPLETED', 'RECEIVE_BOOT_COMPLETED',
-                      'AutostartStore', 'AppLabelResolver.assets', 'icons[e.pkg]']) {
+                      'AutostartStore', 'AppLabelResolver.assets', 'icons[e.pkg]',
+                      'android.intent.action.BOOT_COMPLETED:', 'componentRegex', 'userPackages', 'package:/data']) {
   if (!autoSrc.includes(needle)) fail(`自启管理缺少 ${needle}`);
 }
 if (/pm list packages -f/.test(autoSrc) && !autoSrc.includes('packageName(from:')) {

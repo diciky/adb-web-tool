@@ -138,9 +138,21 @@ final class AutostartViewController: UIViewController {
             var err = ""
             do {
                 try client.connect(host: self.host.ip, port: self.host.port)
+                // 用户应用包集合（/data 路径），与 Web 端一致：只显示第三方应用的自启项，
+                // 否则 60+ 个系统 Receiver 会把列表淹没。
+                var userPackages = Set<String>()
+                let pkgOut = (try? client.shell("pm list packages -f", timeout: 90)) ?? ""
+                for line in pkgOut.split(separator: "\n") {
+                    let s = line.trimmingCharacters(in: .whitespaces)
+                    guard s.hasPrefix("package:/data"), let eq = s.lastIndex(of: "=") else { continue }
+                    let pkg = String(s[s.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+                    if !pkg.isEmpty { userPackages.insert(pkg) }
+                }
                 // 一次读取全部包信息，避免逐个 dumpsys（慢且易失败）
                 let dump = try client.shell("dumpsys package", timeout: 120)
-                parsed = Self.parseAutostart(from: dump)
+                let all = Self.parseAutostart(from: dump)
+                // 有用户包集合时只保留第三方；拿不到集合（固件不支持 -f）时降级显示全部
+                parsed = userPackages.isEmpty ? all : all.filter { userPackages.contains($0.pkg) }
                 AutostartStore.save(host: self.host, entries: parsed)
                 client.disconnect()
             } catch {
@@ -210,97 +222,132 @@ final class AutostartViewController: UIViewController {
 
     /// 解析全量 `dumpsys package` 输出，返回所有 BOOT_COMPLETED 自启组件。
     ///
-    /// dumpsys 结构（各厂商大致相同）：
-    ///   Package [com.foo] (...)
-    ///     ...
-    ///     Receiver Resolver Table:
-    ///       Non-Data Actions:
-    ///         android.intent.action.BOOT_COMPLETED:
-    ///           com.foo/.BootReceiver filter ...
-    ///     ...
+    /// 关键：全量 dump 与单包 dump 结构完全不同：
+    /// - 全量（本 App 采用）：顶层是「Receiver Resolver Table」，按 action 聚合，
+    ///   `android.intent.action.BOOT_COMPLETED:` 下的每一行就是一个自启组件：
+    ///       android.intent.action.BOOT_COMPLETED:
+   ///         33148b ar.tvplayer.tv/.base.BootReceiver
+   ///         9835fb com.sony.dtv.b2b.rs232csupport/.BootCompletedReceiver
+    ///   这种输出里**没有** `Package [xxx]` 分段，旧版按段取包名会恒为空。
+    /// - 单包（部分固件 fallback）：`Package [xxx]` 分段 + 段内 Receiver Resolver。
+    ///
+    /// 实测 BRAVIA Android 9 全量输出含 81 个 BOOT_COMPLETED 组件，Web 端同款数据。
     static func parseAutostart(from dump: String) -> [AutostartEntry] {
         let lines = dump.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var result: [AutostartEntry] = []
         var seen = Set<String>()
 
-        // 按 `Package [xxx]` 分段，段首即包名，绝不再从路径切包。
-        var segments: [(pkg: String, lines: [String])] = []
-        var currentPkg = ""
-        var currentLines: [String] = []
+        // 组件行：缩进 + 6~8 位十六进制 hash + 空白 + 包名/类名
+        let componentPattern = #"^\s+[0-9a-fA-F]{6,}\s+([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/([a-zA-Z0-9_.$]+)"#
+        let componentRegex = try? NSRegularExpression(pattern: componentPattern)
+
+        // ---- 主路径：全量 Resolver Table 格式 ----
+        // 只在「精确等于 android.intent.action.BOOT_COMPLETED:」时进入，
+        // 排除 BOOT_COMPLETED.PROXY / PRE_ / LOCKED_ / ACTION_ 等变体 action。
+        let bootAction = "android.intent.action.BOOT_COMPLETED:"
+        var inBootSection = false
         for line in lines {
-            if let pkg = packageName(from: line) {
-                if !currentPkg.isEmpty { segments.append((currentPkg, currentLines)) }
-                currentPkg = pkg
-                currentLines = []
-            } else if !currentPkg.isEmpty {
-                currentLines.append(line)
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed == bootAction {
+                inBootSection = true
+                continue
             }
+            guard inBootSection else { continue }
+            // 遇到其它 action（以非空白开头）或空行，结束本节
+            if trimmed.isEmpty || (!line.hasPrefix(" ") && !line.hasPrefix("\t")) {
+                if !trimmed.isEmpty { inBootSection = false }
+                continue
+            }
+            guard let regex = componentRegex,
+                  let m = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                  let pkgRange = Range(m.range(at: 1), in: line),
+                  let clsRange = Range(m.range(at: 2), in: line) else {
+                // 遇到非组件行即本节结束（下一个 action 标题，或 filter 明细）
+                inBootSection = false
+                continue
+            }
+            let pkg = String(line[pkgRange])
+            let comp = "\(pkg)/\(String(line[clsRange]))"
+            guard !seen.contains(comp) else { continue }
+            seen.insert(comp)
+            result.append(AutostartEntry(pkg: pkg, component: comp, enabled: true))
         }
-        if !currentPkg.isEmpty { segments.append((currentPkg, currentLines)) }
 
-        let componentPattern = #"([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/([a-zA-Z0-9_.$]+)"#
-        let regex = try? NSRegularExpression(pattern: componentPattern)
-
-        for seg in segments {
-            let pkg = seg.pkg
-            let body = seg.lines
-            var hasBootPerm = false
-            var components: [(String, Bool)] = []
-
-            for (i, line) in body.enumerated() {
-                if line.contains("RECEIVE_BOOT_COMPLETED") {
-                    // granted=false 视为无权限；其余（granted=true 或未标注）视为有
-                    hasBootPerm = !line.contains("granted=false")
-                }
-                guard line.contains("android.intent.action.BOOT_COMPLETED") else { continue }
-                let lo = max(0, i - 4)
-                let hi = min(body.count - 1, i + 4)
-                let window = body[lo...hi].joined(separator: "\n")
-                guard let regex,
-                      let m = regex.firstMatch(in: window, range: NSRange(window.startIndex..., in: window)),
-                      let r = Range(m.range, in: window) else { continue }
-                let matched = String(window[r])
-                let parts = matched.split(separator: "/", maxSplits: 1)
-                var comp: String
-                if parts.count == 2 {
-                    let owner = String(parts[0])
-                    let cls = String(parts[1])
-                    // 若匹配到的 owner 不是本包（正则可能抓到相邻包），用本包名归一
-                    comp = owner == pkg ? matched : "\(pkg)/\(cls)"
-                } else {
-                    comp = matched
-                }
-                let enabled = !window.contains("enabled=false")
-                if !seen.contains(comp) {
-                    seen.insert(comp)
-                    components.append((comp, enabled))
+        // ---- fallback：单包 / 带 Package [xxx] 分段的固件 ----
+        if result.isEmpty {
+            var segments: [(pkg: String, lines: [String])] = []
+            var currentPkg = ""
+            var currentLines: [String] = []
+            for line in lines {
+                if let pkg = packageName(from: line) {
+                    if !currentPkg.isEmpty { segments.append((currentPkg, currentLines)) }
+                    currentPkg = pkg
+                    currentLines = []
+                } else if !currentPkg.isEmpty {
+                    currentLines.append(line)
                 }
             }
+            if !currentPkg.isEmpty { segments.append((currentPkg, currentLines)) }
 
-            // 有 BOOT_COMPLETED 接收器组件，或有权限声明，都纳入结果（兼容只报权限的固件）
-            if components.isEmpty {
-                if hasBootPerm {
-                    let comp = "\(pkg)/*"
+            let loosePattern = #"([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/([a-zA-Z0-9_.$]+)"#
+            let looseRegex = try? NSRegularExpression(pattern: loosePattern)
+            for seg in segments {
+                let pkg = seg.pkg
+                let body = seg.lines
+                var hasBootPerm = false
+                var components: [(String, Bool)] = []
+                for (i, line) in body.enumerated() {
+                    if line.contains("RECEIVE_BOOT_COMPLETED") {
+                        hasBootPerm = !line.contains("granted=false")
+                    }
+                    guard line.contains("android.intent.action.BOOT_COMPLETED") else { continue }
+                    let lo = max(0, i - 4)
+                    let hi = min(body.count - 1, i + 4)
+                    let window = body[lo...hi].joined(separator: "\n")
+                    guard let regex = looseRegex,
+                          let m = regex.firstMatch(in: window, range: NSRange(window.startIndex..., in: window)),
+                          let r = Range(m.range, in: window) else { continue }
+                    let matched = String(window[r])
+                    let parts = matched.split(separator: "/", maxSplits: 1)
+                    var comp: String
+                    if parts.count == 2 {
+                        let owner = String(parts[0])
+                        let cls = String(parts[1])
+                        comp = owner == pkg ? matched : "\(pkg)/\(cls)"
+                    } else {
+                        comp = matched
+                    }
+                    let enabled = !window.contains("enabled=false")
                     if !seen.contains(comp) {
                         seen.insert(comp)
-                        result.append(AutostartEntry(pkg: pkg, component: comp, enabled: true))
+                        components.append((comp, enabled))
                     }
                 }
-            } else {
-                for (comp, enabled) in components {
-                    result.append(AutostartEntry(pkg: pkg, component: comp, enabled: enabled))
+                if components.isEmpty {
+                    if hasBootPerm {
+                        let comp = "\(pkg)/*"
+                        if !seen.contains(comp) {
+                            seen.insert(comp)
+                            result.append(AutostartEntry(pkg: pkg, component: comp, enabled: true))
+                        }
+                    }
+                } else {
+                    for (comp, enabled) in components {
+                        result.append(AutostartEntry(pkg: pkg, component: comp, enabled: enabled))
+                    }
                 }
             }
         }
         return result
     }
 
-    /// 从 dumpsys 的 `Package [com.foo] (...)` 行提取包名
+    /// 从 dumpsys 的 `Package [com.foo] (...)` 行提取包名（fallback 用）
     private static func packageName(from line: String) -> String? {
-        guard line.hasPrefix("Package [") else { return nil }
-        guard let close = line.firstIndex(of: "]") else { return nil }
-        let start = line.index(line.startIndex, offsetBy: 9)
-        let pkg = String(line[start..<close]).trimmingCharacters(in: .whitespaces)
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("Package [") else { return nil }
+        guard let close = trimmed.firstIndex(of: "]") else { return nil }
+        let start = trimmed.index(trimmed.startIndex, offsetBy: 9)
+        let pkg = String(trimmed[start..<close]).trimmingCharacters(in: .whitespaces)
         // 合法 Android 包名至少含一个点
         return pkg.contains(".") ? pkg : nil
     }

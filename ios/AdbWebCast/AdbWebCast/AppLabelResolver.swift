@@ -75,9 +75,25 @@ enum AppLabelResolver {
         }
     }
 
-    /// 该包是否已经尝试过解析（即使没有拿到名称/图标也算完成）。
+    /// 该包资源是否已完整解析（名称 + 图标都有，或明确重试期未到）。
+    /// 关键修复：只有名字没有图标的包（如旧版缓存的 Twitch/Emby）必须允许重试，
+    /// 否则一旦被标记为 resolved 就永远不会再尝试补图标。
     static func isResolved(pkg: String) -> Bool {
-        cacheQueue.sync { (records[pkg]?.resolvedAt ?? 0) > 0 }
+        cacheQueue.sync {
+            guard let r = records[pkg], r.resolvedAt > 0 else { return false }
+            // 名称与图标齐全 → 完成
+            if r.label != nil, r.iconFile != nil { return true }
+            // 缺任意一项 → 超过重试间隔后重新解析（图标失败的包也有机会补上）
+            return Date().timeIntervalSince1970 - r.resolvedAt < retryInterval
+        }
+    }
+
+    /// 图标是否缺失（用于列表页优先补图标）。
+    static func needsIcon(pkg: String) -> Bool {
+        cacheQueue.sync {
+            guard let r = records[pkg] else { return true }
+            return r.iconFile == nil
+        }
     }
 
     /// 只查缓存，不触发网络/IO。apkPath 参数保留兼容，实际按包名查找。
@@ -107,7 +123,9 @@ enum AppLabelResolver {
         var resolvedAt: TimeInterval
     }
 
-    private static let cacheDefaultsKey = "adbweb.app.assets.v2"
+    // v3：旧 v2 缓存里大量包只有名字没有图标（资源映射/AAPT2 空条目问题），
+    // 换 key 让这些包在升级后重新解析一次，补上图标；名称仍从 v1 迁移兜底。
+    private static let cacheDefaultsKey = "adbweb.app.assets.v3"
     private static let legacyLabelsKey = "adbweb.app.labels.v1"
     private static let retryInterval: TimeInterval = 24 * 60 * 60
     private static let cacheQueue = DispatchQueue(label: "adbweb.app.assets.cache")
@@ -578,6 +596,42 @@ enum AppLabelResolver {
                     return data
                 }
             }
+        }
+
+        // 三次兜底（关键）：部分 AAPT2 包的 android:icon 在资源表里是空条目
+        // （entryOffset=0xffffffff），例如 Twitch 0x7f070058，导致上面全部落空。
+        // 此时从包内图片资源里启发式挑一张最像启动图标的：
+        // - 只看 res/mipmap* 与 res/drawable* 的 png/webp，排除 .9.png 拉伸图；
+        // - 文件名含 icon/launcher/logo/app 关键词优先，mipmap 目录优先；
+        // - 同等条件取体积较大者（通常即高密度启动图标）。
+        struct IconCandidate { let name: String; let score: Int; let size: Int }
+        var best: IconCandidate?
+        let keywords = ["ic_launcher", "launcher", "app_icon", "logoicon", "logo", "icon", "app"]
+        for (name, entry) in entries {
+            guard name.hasPrefix("res/mipmap") || name.hasPrefix("res/drawable") else { continue }
+            let lower = name.lowercased()
+            guard lower.hasSuffix(".png") || lower.hasSuffix(".webp") else { continue }
+            guard !lower.hasSuffix(".9.png") else { continue }
+            let file = (name as NSString).lastPathComponent.lowercased()
+            guard file.contains("icon") || file.contains("launch") || file.contains("logo") else { continue }
+            // 启动图标通常 >= 2KB；小于 1KB 的多为占位/小图标
+            guard entry.uncompressedSize >= 1024 else { continue }
+            var score = 0
+            if name.hasPrefix("res/mipmap") { score += 100 }
+            for (idx, kw) in keywords.enumerated() where file.contains(kw) {
+                score += (keywords.count - idx) * 10
+                break
+            }
+            if let current = best {
+                if score > current.score || (score == current.score && entry.uncompressedSize > current.size) {
+                    best = IconCandidate(name: name, score: score, size: entry.uncompressedSize)
+                }
+            } else {
+                best = IconCandidate(name: name, score: score, size: entry.uncompressedSize)
+            }
+        }
+        if let best = best, let data = extract(best.name, from: bytes, entries: entries), data.count > 64 {
+            return data
         }
         return nil
     }
