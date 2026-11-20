@@ -1,8 +1,8 @@
 import UIKit
 
-/// 工具箱页：屏幕(截图/实时) / 电源 / 文字输入 / 剪贴板 / Shell 命令。
-/// 遥控器已独立为 Tab 中的「遥控」页。
-final class ToolsViewController: UIViewController {
+/// Shell 命令页：直接执行任意 shell 命令并显示输出。
+/// 屏幕/电源/文字输入/剪贴板已平铺到「设备」页宫格，不再经此折叠页。
+final class ShellViewController: UIViewController {
 
     private let host: AdbHost
 
@@ -38,7 +38,7 @@ final class ToolsViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        title = "工具箱"
+        title = "Shell 命令"
         let scroll = UIScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
@@ -59,24 +59,8 @@ final class ToolsViewController: UIViewController {
             stack.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -32),
         ])
 
-        let screenBtn = ToolsViewController.btn("屏幕：截图 / 实时查看", "camera")
-        screenBtn.addTarget(self, action: #selector(openScreen), for: .touchUpInside)
-        stack.addArrangedSubview(screenBtn)
-
-        let powerBtn = ToolsViewController.btn("电源操作", "power")
-        powerBtn.addTarget(self, action: #selector(power), for: .touchUpInside)
-        stack.addArrangedSubview(powerBtn)
-
-        let textBtn = ToolsViewController.btn("输入文字到电视", "keyboard")
-        textBtn.addTarget(self, action: #selector(inputText), for: .touchUpInside)
-        stack.addArrangedSubview(textBtn)
-
-        let clipBtn = ToolsViewController.btn("设置剪贴板（中文）", "doc.on.clipboard")
-        clipBtn.addTarget(self, action: #selector(clipboard), for: .touchUpInside)
-        stack.addArrangedSubview(clipBtn)
-
         stack.addArrangedSubview(shellInput)
-        let shellBtn = ToolsViewController.btn("执行 Shell 命令", "terminal")
+        let shellBtn = ShellViewController.btn("执行 Shell 命令", "terminal")
         shellBtn.addTarget(self, action: #selector(runShell), for: .touchUpInside)
         stack.addArrangedSubview(shellBtn)
         shellOutput.heightAnchor.constraint(equalToConstant: 180).isActive = true
@@ -87,39 +71,6 @@ final class ToolsViewController: UIViewController {
     }
 
     private func status(_ s: String) { DispatchQueue.main.async { self.statusLabel.text = s } }
-
-    @objc private func openScreen() {
-        navigationController?.pushViewController(ScreenViewController(host: host), animated: true)
-    }
-
-    // MARK: 电源
-    @objc private func power() {
-        let sheet = UIAlertController(title: "电源操作", message: nil, preferredStyle: .actionSheet)
-        [("重启", "reboot"), ("关机", "reboot -p"), ("重启到 Recovery", "reboot recovery"),
-         ("休眠（息屏）", "input keyevent 223"), ("唤醒（亮屏）", "input keyevent 224")].forEach { item in
-            sheet.addAction(UIAlertAction(title: item.0, style: .default) { _ in self.execCmd(item.1, msg: "已发送：\(item.0)") })
-        }
-        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-        sheet.popoverPresentationController?.sourceView = view
-        present(sheet, animated: true)
-    }
-
-    @objc private func inputText() {
-        UIKitHelper.input("输入文字", placeholder: "英文字母/数字", in: self) { [weak self] text in
-            guard let self, !text.isEmpty else { return }
-            let escaped = text.replacingOccurrences(of: "'", with: "").replacingOccurrences(of: " ", with: "%s")
-            self.execCmd("input text '\(escaped)'", msg: "文本已输入（中文请用剪贴板）")
-        }
-    }
-
-    @objc private func clipboard() {
-        UIKitHelper.input("设置电视剪贴板", placeholder: "可输入中文", in: self) { [weak self] text in
-            guard let self, !text.isEmpty else { return }
-            let escaped = text.replacingOccurrences(of: "\"", with: "\\\"")
-            let cmd = "am broadcast -a org.albireo.clipper.set -e text \"\(escaped)\""
-            self.execCmd(cmd, msg: "已尝试写入剪贴板（需电视安装 Clipper 应用支持中文）")
-        }
-    }
 
     @objc private func runShell() {
         guard let cmd = shellInput.text?.trimmed, !cmd.isEmpty else { return }

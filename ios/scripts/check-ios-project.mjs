@@ -116,6 +116,7 @@ if (!proto.includes('frameLimit')) fail('缺少 frameLimit（单帧上限 min(64
 // v2.7.0 截图修复：adbkit 同款命令（echo 探测行 + stderr 重定向）+ CRLF 自动探测。
 if (!proto.includes('echo && screencap -p 2>/dev/null')) fail('截图命令未对齐 adbkit（echo 探测行 + 2>/dev/null 防污染）');
 if (!proto.includes('crlfMangled')) fail('截图缺少 CRLF 自动探测（盲目 \r\n→\n 替换会改坏合法 PNG）');
+if (!proto.includes('电视未返回画面数据')) fail('截图必须校验最小字节数（screencap 失败仅回显 1B，需明确报错供实时循环熔断）');
 if (!proto.includes('0x01000001')) fail('CNXN 版本应为官方 0x01000001');
 // v2.8.0 稳定性：复刻官方 adb server 的传输重启语义（断线自动重连重试 + 回前台废弃半开连接）。
 if (!proto.includes('withAutoReconnect')) fail('缺少 withAutoReconnect（断线自动重建连接并重试，复刻 adb server transport 重启）');
@@ -216,9 +217,15 @@ for (const hidden of ['wrap(autostart', 'wrap(batch', 'wrap(tools']) {
   if (homeSrc.includes(hidden)) fail(`「${hidden.slice(5)}」不应再作为独立 Tab（已移入设备页宫格）`);
 }
 const infoSrc = readFileSync(join(swiftDir, 'InfoViewController.swift'), 'utf8');
-for (const needle of ['ToolsViewController(host:', 'AutostartViewController(host:', 'BatchViewController(host:', 'LogViewerViewController()']) {
+for (const needle of ['ShellViewController(host:', 'AutostartViewController(host:', 'BatchViewController(host:', 'LogViewerViewController()', 'ScreenViewController(host:', 'powerAction', 'inputTextAction', 'clipboardAction']) {
   if (!infoSrc.includes(needle)) fail(`设备页宫格缺少入口 ${needle}`);
 }
+// v3.1.0：工具箱完全平铺 —— 电源/文字/剪贴板动作内联在设备页，ShellViewController 只保留 shell
+const toolsSrc = readFileSync(join(swiftDir, 'ToolsViewController.swift'), 'utf8');
+if (toolsSrc.includes('ScreenViewController(host:')) fail('Shell 页不应再折叠屏幕入口（已平铺到设备页）');
+if (toolsSrc.includes('screencap') && toolsSrc.includes('实时查看')) fail('Shell 页不应再折叠屏幕入口');
+const screenSrc = readFileSync(join(swiftDir, 'ScreenViewController.swift'), 'utf8');
+if (!/consecutiveFails\s*>=\s*5/.test(screenSrc)) fail('实时屏幕必须失败退避并在连续失败后熔断（不能 0.15s 高频重试打爆电视）');
 // v3.0.0：运行日志系统
 const helpersSrc = readFileSync(join(swiftDir, 'UIHelpers.swift'), 'utf8');
 for (const needle of ['enum AdbLog', 'static func log(', 'static func dump()', 'class LogViewerViewController']) {
@@ -226,7 +233,6 @@ for (const needle of ['enum AdbLog', 'static func log(', 'static func dump()', '
 }
 if (!proto.includes('AdbLog.log(')) fail('AdbProtocol 未接入运行日志（无法远程诊断协议问题）');
 if (proto.match(/AdbLog\.log/g).length < 15) fail('AdbProtocol 日志埋点不足（连接/握手/OPEN/shell/sync 均需覆盖）');
-const screenSrc = readFileSync(join(swiftDir, 'ScreenViewController.swift'), 'utf8');
 if (!screenSrc.includes('UIImageWriteToSavedPhotosAlbum')) fail('屏幕页缺少保存到相册');
 if (!screenSrc.includes('while live')) fail('屏幕页缺少实时刷屏循环');
 if (!failed) ok('project.pbxproj 结构完整且引用全部源码');

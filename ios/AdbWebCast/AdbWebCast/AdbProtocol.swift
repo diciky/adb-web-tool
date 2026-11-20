@@ -792,6 +792,13 @@ final class AdbClient {
             }
             png = fixed
         }
+        // 电视侧 screencap 失败时（典型：正在播放 DRM/受保护画面，或 surface 被安全图层占用），
+        // shell 只回显 echo 的 1 个换行。返回 <100 字节视为抓帧失败，明确报错——
+        // 实时屏幕循环必须感知失败做退避熔断，否则会 155ms 一次无限重试打爆电视（v3.0.1 用户日志实证）。
+        guard png.count >= 100 else {
+            AdbLog.log("screencap 仅返回 \(png.count)B，电视侧抓帧失败", level: "W")
+            throw AdbError.commandFailed("电视未返回画面数据（\((png.count))B）。常见原因：电视正在播放受保护内容（DRM/安全图层），回到桌面后再试")
+        }
         return png
     }
 

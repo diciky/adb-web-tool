@@ -143,22 +143,39 @@ final class ScreenViewController: UIViewController {
             return
         }
         var frames = 0
+        var consecutiveFails = 0
         let start = Date()
         while live {
             do {
                 let png = try c.screenshot()
                 if let img = UIImage(data: png) { self.show(img) }
                 frames += 1
+                consecutiveFails = 0
                 let fps = Double(frames) / max(0.1, Date().timeIntervalSince(start))
                 status(String(format: "实时屏幕 · 约 %.1f 帧/秒 · 抓帧 %.0f KB", fps, Double(png.count)/1024))
             } catch {
-                status("抓帧中断：\(error.localizedDescription)")
-                break
+                // 抓帧失败（如电视进入 DRM 内容）：退避重试，连续失败自动熔断，
+                // 绝不 0.15s 高频重试打爆电视 adbd（v3.0.1 日志实证的卡死根因）。
+                consecutiveFails += 1
+                status("抓帧失败（\(consecutiveFails)/5）：\(error.localizedDescription)")
+                if consecutiveFails >= 5 {
+                    status("连续抓帧失败，已自动停止实时屏幕。切回电视桌面后可重新开启")
+                    break
+                }
+                Thread.sleep(forTimeInterval: 1.5)
+                continue
             }
-            Thread.sleep(forTimeInterval: 0.15)
+            Thread.sleep(forTimeInterval: 0.3)
         }
         c.disconnect()
         self.liveClient = nil
+        // 熔断退出时同步恢复开关状态与按钮外观
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.live else { return }
+            self.live = false
+            self.liveBtn.setTitle("  开启实时屏幕", for: .normal)
+            self.liveBtn.backgroundColor = .secondarySystemFill
+        }
     }
 
     // MARK: 保存到相册

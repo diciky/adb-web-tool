@@ -8,9 +8,13 @@ final class InfoViewController: UIViewController {
     private var info = DeviceInfo()
     private var rows: [(String, String)] = []
 
-    /// 功能宫格：所有次级功能从这里一击直达（不再塞进"更多"）
+    /// 功能宫格：所有功能一击直达，工具箱内的功能全部平铺（不再折叠）
     private static let features: [(String, String, String)] = [
-        ("🧰", "工具箱", "屏幕截图/实时 · 电源 · 文字输入 · 剪贴板 · Shell"),
+        ("📷", "屏幕：截图 / 实时", "截图预览、保存、实时查看电视画面"),
+        ("⏻", "电源操作", "重启 / 关机 / 息屏 / 唤醒"),
+        ("⌨️", "输入文字", "向电视输入英文字母和数字"),
+        ("📋", "设置剪贴板", "向电视写入文本（支持中文）"),
+        ("🖥️", "Shell 命令", "直接执行任意 shell 命令"),
         ("⚡", "自启管理", "查看与配置开机自启应用"),
         ("📦", "批量安装", "多 APK 批量推送到电视"),
         ("📝", "运行日志", "协议调试日志 · 可复制分享"),
@@ -94,14 +98,65 @@ final class InfoViewController: UIViewController {
     private func openFeature(_ row: Int) {
         switch row {
         case 0:
-            navigationController?.pushViewController(ToolsViewController(host: host), animated: true)
-        case 1:
+            navigationController?.pushViewController(ScreenViewController(host: host), animated: true)
+        case 1: powerAction()
+        case 2: inputTextAction()
+        case 3: clipboardAction()
+        case 4:
+            navigationController?.pushViewController(ShellViewController(host: host), animated: true)
+        case 5:
             navigationController?.pushViewController(AutostartViewController(host: host), animated: true)
-        case 2:
+        case 6:
             navigationController?.pushViewController(BatchViewController(host: host), animated: true)
-        case 3:
+        case 7:
             navigationController?.pushViewController(LogViewerViewController(), animated: true)
         default: break
+        }
+    }
+
+    // MARK: 平铺的功能动作（原工具箱内迁出）
+
+    @objc private func powerAction() {
+        let sheet = UIAlertController(title: "电源操作", message: nil, preferredStyle: .actionSheet)
+        [("重启", "reboot"), ("关机", "reboot -p"), ("重启到 Recovery", "reboot recovery"),
+         ("休眠（息屏）", "input keyevent 223"), ("唤醒（亮屏）", "input keyevent 224")].forEach { item in
+            sheet.addAction(UIAlertAction(title: item.0, style: .default) { [weak self] _ in
+                self?.execCmd(item.1, msg: "已发送：\(item.0)")
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = view
+        present(sheet, animated: true)
+    }
+
+    private func inputTextAction() {
+        UIKitHelper.input("输入文字", placeholder: "英文字母/数字", in: self) { [weak self] text in
+            guard let self, !text.isEmpty else { return }
+            let escaped = text.replacingOccurrences(of: "'", with: "").replacingOccurrences(of: " ", with: "%s")
+            self.execCmd("input text '\(escaped)'", msg: "文本已输入（中文请用剪贴板）")
+        }
+    }
+
+    private func clipboardAction() {
+        UIKitHelper.input("设置电视剪贴板", placeholder: "可输入中文", in: self) { [weak self] text in
+            guard let self, !text.isEmpty else { return }
+            let escaped = text.replacingOccurrences(of: "\"", with: "\\\"")
+            let cmd = "am broadcast -a org.albireo.clipper.set -e text \"\(escaped)\""
+            self.execCmd(cmd, msg: "已尝试写入剪贴板（需电视安装 Clipper 应用支持中文）")
+        }
+    }
+
+    /// 在后台线程执行一条 shell 命令，结果以状态栏提示展示
+    private func execCmd(_ cmd: String, msg: String) {
+        statusLabel.text = "发送中…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let client = AdbClient(); var err = ""
+            do { try client.connect(host: self.host.ip, port: self.host.port); _ = try client.shell(cmd, timeout: 30); client.disconnect() }
+            catch { err = error.localizedDescription; client.disconnect() }
+            DispatchQueue.main.async {
+                self.statusLabel.text = err.isEmpty ? msg : "失败：\(err)"
+            }
         }
     }
 }
