@@ -116,6 +116,11 @@ if (!proto.includes('frameLimit')) fail('缺少 frameLimit（单帧上限 min(64
 if (!proto.includes('echo && screencap -p 2>/dev/null')) fail('截图命令未对齐 adbkit（echo 探测行 + 2>/dev/null 防污染）');
 if (!proto.includes('crlfMangled')) fail('截图缺少 CRLF 自动探测（盲目 \r\n→\n 替换会改坏合法 PNG）');
 if (!proto.includes('0x01000001')) fail('CNXN 版本应为官方 0x01000001');
+// v2.8.0 稳定性：复刻官方 adb server 的传输重启语义（断线自动重连重试 + 回前台废弃半开连接）。
+if (!proto.includes('withAutoReconnect')) fail('缺少 withAutoReconnect（断线自动重建连接并重试，复刻 adb server transport 重启）');
+if (!proto.includes('reconnectLocked')) fail('缺少 reconnectLocked 自动重连实现');
+if (!proto.includes('willEnterForegroundNotification')) fail('缺少回前台废弃旧连接钩子（防 iOS 杀后台 TCP 后半开连接卡死）');
+if (!/setReadTimeout\(35\)/.test(proto)) fail('握手未分级超时（等 TV 确认授权应单独给长超时，其余快速失败）');
 if (!failed) ok('ADB 协议常量与帧层关键点齐全');
 
 // ---------- 内置鉴权密钥 ----------

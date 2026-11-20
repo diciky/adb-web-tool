@@ -4,6 +4,9 @@ import Glibc
 #elseif canImport(Darwin)
 import Darwin
 #endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // MARK: - ADB 传输层常量（little-endian 32 位命令字）
 extension Notification.Name {
@@ -245,6 +248,19 @@ final class AdbClient {
     /// 超限会被 adbd 的 check_header 直接判为坏包并杀掉整个连接（表现为推送挂死/断开）。
     /// 老固件（FireOS 5 / 老安卓盒子）通常只有 4096 或 64KB，绝不能按我方 1MB/64KB 硬发。
     private static var deviceMaxData: UInt32 = 4096
+    /// 最近一次成功连接的设备（自动重连时复用，等价 adb server 的 transport 重启）
+    private static var lastHost: String?
+    private static var lastPort: UInt16 = 5555
+    /// 复刻官方 adb server 的常驻行为：iOS 会杀掉后台空闲 TCP，回前台时主动废弃旧连接，
+    /// 下一条命令自动重连（已授权电视 <1 秒、无授权弹窗），杜绝半开连接导致的卡死。
+    private static let foregroundHook: Void = {
+        #if canImport(UIKit)
+        _ = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil
+        ) { _ in AdbClient().invalidate() }
+        #endif
+        return ()
+    }()
 
     private var socket: AdbSocket { Self.sharedSocket }
 
@@ -257,7 +273,10 @@ final class AdbClient {
 
     func connect(host: String, port: UInt16 = 5555) throws {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
+        _ = Self.foregroundHook   // 确保前台重连钩子已注册
         let key = "\(host):\(port)"
+        Self.lastHost = host
+        Self.lastPort = port
         // 同一设备且连接仍有效 → 直接复用，跳过握手（不再弹 RSA 授权框）
         if Self.connectedKey == key && Self.sharedSocket.isValid { return }
         // 设备变更或旧连接已断 → 重建连接并握手
@@ -267,8 +286,7 @@ final class AdbClient {
         do {
             postStage("正在连接电视 \(host):\(port)…")
             try Self.sharedSocket.connect(host: host, port: port)
-            // 握手阶段要给用户在电视上点「OK」留出时间；配合 poll 硬超时保证有上限
-            Self.sharedSocket.setReadTimeout(40)
+            // 握手超时按阶段内部分级控制（见 handshake），保证已授权电视秒级完成
             try handshake()
             Self.connectedKey = key
         } catch {
@@ -282,6 +300,9 @@ final class AdbClient {
         let cnxn = AdbMessage(command: AdbCmd.cnxn, arg0: AdbCmd.version,
                               arg1: AdbCmd.maxData, data: AdbCmd.connectPayload.data(using: .utf8)!)
         try socket.sendMessage(cnxn)
+        // 分级超时：已授权电视每一步都应在 1 秒内完成，快速失败不拖泥带水；
+        // 只有"等待用户在电视上点 OK"这一步才给长超时。
+        socket.setReadTimeout(10)
         var repliedSignature = false
         var repliedPublicKey = false
         let deadline = Date().addingTimeInterval(90)
@@ -310,6 +331,8 @@ final class AdbClient {
                     }
                     try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 2, arg1: 0, data: sig as Data))
                     repliedSignature = true
+                    // key 已存：电视立即回 CNXN；key 未存：立即回新 token（都应 <1s）
+                    socket.setReadTimeout(8)
                     postStage("已发送签名，等待电视确认…")
                     NotificationCenter.default.post(name: .adbAuthorizationRequired, object: nil)
                     continue
@@ -317,6 +340,7 @@ final class AdbClient {
                 if !repliedPublicKey, let pub = AdbKeys.publicBlob {
                     try socket.sendMessage(AdbMessage(command: AdbCmd.auth, arg0: 3, arg1: 0, data: pub))
                     repliedPublicKey = true
+                    socket.setReadTimeout(35)   // 等用户在电视上勾选「一律允许」并点 OK
                     postStage("请在电视勾选「一律允许」并点 OK…")
                     continue
                 }
@@ -329,6 +353,33 @@ final class AdbClient {
 
     private func postStage(_ text: String) {
         NotificationCenter.default.post(name: .adbConnectionStage, object: text)
+    }
+
+    /// 断线重连（连接已持锁）。等价 adb server 的 transport 重启：用最近设备重新握手。
+    private func reconnectLocked() throws {
+        guard let h = Self.lastHost else { throw AdbError.connectionFailed("无可用连接") }
+        Self.sharedSocket.closeSocket()
+        Self.packetStore.removeAll()
+        Self.connectedKey = ""
+        Self.idCounter = 1
+        try Self.sharedSocket.connect(host: h, port: Self.lastPort)
+        try handshake()
+        Self.connectedKey = "\(h):\(Self.lastPort)"
+    }
+
+    /// 复刻官方 adb server 的稳定性语义：任何传输层错误（断线/半开连接/帧异常/超时）
+    /// 都自动重建连接并重试一次。已授权电视重连握手 <1 秒、无授权弹窗，用户完全无感知。
+    /// 必须在已持有 connLock 的调用方里使用（递归锁）。
+    private func withAutoReconnect<T>(_ op: () throws -> T) throws -> T {
+        do { return try op() }
+        catch let e as AdbError {
+            var retriable = false
+            if case .ioError = e { retriable = true }
+            if case .protocolError = e { retriable = true }
+            guard retriable, Self.lastHost != nil else { throw e }
+            do { try reconnectLocked() } catch { throw e }   // 重连失败则抛原始错误
+            return try op()
+        }
     }
 
     /// 服务端发来的帧：arg0 = remoteId，arg1 = localId。
@@ -422,17 +473,19 @@ final class AdbClient {
         return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
     }
 
-    /// 执行 shell 命令，返回原始字节（截图等二进制场景）
+    /// 执行 shell 命令，返回原始字节（截图等二进制场景）。断线自动重连重试一次。
     func shellData(_ command: String, timeout: TimeInterval = 60) throws -> Data {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
-        let (local, remote) = try open("shell:\(command)")
-        defer { closeChannel(local: local, remote: remote) }
-        socket.setReadTimeout(Int(timeout))
-        var output = Data()
-        while let chunk = try receiveStreamData(local: local, remote: remote) {
-            output.append(chunk)
+        return try withAutoReconnect {
+            let (local, remote) = try open("shell:\(command)")
+            defer { closeChannel(local: local, remote: remote) }
+            socket.setReadTimeout(Int(timeout))
+            var output = Data()
+            while let chunk = try receiveStreamData(local: local, remote: remote) {
+                output.append(chunk)
+            }
+            return output
         }
-        return output
     }
 
     func deviceModel() -> String {
@@ -527,93 +580,99 @@ final class AdbClient {
         return (id, body)
     }
 
-    /// sync 推送本地文件到设备
+    /// sync 推送本地文件到设备。断线自动重连重试一次（从头重推，幂等安全）。
     func push(localURL: URL, remotePath: String, progress: (Int) -> Void) throws {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
-        socket.setReadTimeout(90)
-        let (local, remote) = try openSync()
-        defer { closeChannel(local: local, remote: remote) }
-        let mode: UInt32 = 0o100644
-        try sendSyncFrame("SEND", body: "\(remotePath),\(mode)".data(using: .utf8)!, local: local, remote: remote)
+        try withAutoReconnect {
+            socket.setReadTimeout(90)
+            let (local, remote) = try openSync()
+            defer { closeChannel(local: local, remote: remote) }
+            let mode: UInt32 = 0o100644
+            try sendSyncFrame("SEND", body: "\(remotePath),\(mode)".data(using: .utf8)!, local: local, remote: remote)
 
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.intValue ?? 0
-        guard let handle = try? FileHandle(forReadingFrom: localURL) else {
-            throw AdbError.commandFailed("无法读取文件")
-        }
-        defer { try? handle.close() }
-        var sent = 0
-        while true {
-            let chunk = (try? handle.read(upToCount: frameLimit)) ?? Data()
-            if chunk.isEmpty { break }
-            try sendSyncFrame("DATA", body: chunk, local: local, remote: remote)
-            sent += chunk.count
-            progress(fileSize > 0 ? min(99, Int(Double(sent) / Double(fileSize) * 100)) : 50)
-        }
-        try sendSyncFrame("DONE", body: Data(UInt32(Date().timeIntervalSince1970).leBytes), local: local, remote: remote)
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.intValue ?? 0
+            guard let handle = try? FileHandle(forReadingFrom: localURL) else {
+                throw AdbError.commandFailed("无法读取文件")
+            }
+            defer { try? handle.close() }
+            var sent = 0
+            while true {
+                let chunk = (try? handle.read(upToCount: frameLimit)) ?? Data()
+                if chunk.isEmpty { break }
+                try sendSyncFrame("DATA", body: chunk, local: local, remote: remote)
+                sent += chunk.count
+                progress(fileSize > 0 ? min(99, Int(Double(sent) / Double(fileSize) * 100)) : 50)
+            }
+            try sendSyncFrame("DONE", body: Data(UInt32(Date().timeIntervalSince1970).leBytes), local: local, remote: remote)
 
-        let (id, body) = try receiveSyncPacket(local: local, remote: remote)
-        if id == "FAIL" {
-            throw AdbError.commandFailed("推送失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
+            let (id, body) = try receiveSyncPacket(local: local, remote: remote)
+            if id == "FAIL" {
+                throw AdbError.commandFailed("推送失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
+            }
+            guard id == "OKAY" else { throw AdbError.protocolError("sync 返回未知包 \(id)") }
+            try sendSyncFrame("QUIT", body: Data(), local: local, remote: remote)
+            progress(100)
         }
-        guard id == "OKAY" else { throw AdbError.protocolError("sync 返回未知包 \(id)") }
-        try sendSyncFrame("QUIT", body: Data(), local: local, remote: remote)
-        progress(100)
     }
 
-    /// sync 从设备拉取文件到本地，进度 0-100
+    /// sync 从设备拉取文件到本地，进度 0-100。断线自动重连重试一次。
     func pull(remotePath: String, to localURL: URL, progress: (Int) -> Void) throws {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
-        socket.setReadTimeout(90)
-        let (local, remote) = try openSync()
-        defer { closeChannel(local: local, remote: remote) }
-        try sendSyncFrame("RECV", body: remotePath.data(using: .utf8)!, local: local, remote: remote)
-        FileManager.default.createFile(atPath: localURL.path, contents: nil)
-        guard let handle = try? FileHandle(forWritingTo: localURL) else {
-            throw AdbError.commandFailed("无法写入本地文件")
-        }
-        defer { try? handle.close() }
-        while true {
-            let (id, body) = try receiveSyncPacket(local: local, remote: remote)
-            if id == "DONE" { break }
-            if id == "FAIL" {
-                throw AdbError.commandFailed("下载失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
+        try withAutoReconnect {
+            socket.setReadTimeout(90)
+            let (local, remote) = try openSync()
+            defer { closeChannel(local: local, remote: remote) }
+            try sendSyncFrame("RECV", body: remotePath.data(using: .utf8)!, local: local, remote: remote)
+            FileManager.default.createFile(atPath: localURL.path, contents: nil)
+            guard let handle = try? FileHandle(forWritingTo: localURL) else {
+                throw AdbError.commandFailed("无法写入本地文件")
             }
-            guard id == "DATA" else { throw AdbError.protocolError("sync 返回未知包 \(id)") }
-            try? handle.write(contentsOf: body)
+            defer { try? handle.close() }
+            while true {
+                let (id, body) = try receiveSyncPacket(local: local, remote: remote)
+                if id == "DONE" { break }
+                if id == "FAIL" {
+                    throw AdbError.commandFailed("下载失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
+                }
+                guard id == "DATA" else { throw AdbError.protocolError("sync 返回未知包 \(id)") }
+                try? handle.write(contentsOf: body)
+            }
+            progress(100)
         }
-        progress(100)
     }
 
-    /// 列目录（sync LIST → DENT/DONE）
+    /// 列目录（sync LIST → DENT/DONE）。断线自动重连重试一次。
     func listDir(_ path: String) throws -> [RemoteFile] {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
-        socket.setReadTimeout(90)
-        let (local, remote) = try openSync()
-        defer { closeChannel(local: local, remote: remote) }
-        try sendSyncFrame("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
-        var result: [RemoteFile] = []
-        while true {
-            let (id, body) = try receiveSyncPacket(local: local, remote: remote)
-            if id == "DONE" { break }
-            if id == "FAIL" {
-                throw AdbError.commandFailed("读取目录失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
+        return try withAutoReconnect {
+            socket.setReadTimeout(90)
+            let (local, remote) = try openSync()
+            defer { closeChannel(local: local, remote: remote) }
+            try sendSyncFrame("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
+            var result: [RemoteFile] = []
+            while true {
+                let (id, body) = try receiveSyncPacket(local: local, remote: remote)
+                if id == "DONE" { break }
+                if id == "FAIL" {
+                    throw AdbError.commandFailed("读取目录失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
+                }
+                guard id == "DENT", body.count >= 16 else { continue }
+                let mode = body.u32le(0)
+                let size = Int64(body.u32le(4))
+                let mtime = body.u32le(8)
+                let nameLen = Int(body.u32le(12))
+                let name = nameLen > 0 && body.count >= 16 + nameLen
+                    ? String(data: body.subdata(in: 16..<(16 + nameLen)), encoding: .utf8) ?? ""
+                    : ""
+                if name.isEmpty || name == "." || name == ".." { continue }
+                result.append(RemoteFile(name: name, path: path.hasSuffix("/") ? path + name : path + "/" + name,
+                                          isDir: (mode & 0o170000) == 0o040000, size: size,
+                                          mtime: Date(timeIntervalSince1970: Double(mtime)), mode: mode))
             }
-            guard id == "DENT", body.count >= 16 else { continue }
-            let mode = body.u32le(0)
-            let size = Int64(body.u32le(4))
-            let mtime = body.u32le(8)
-            let nameLen = Int(body.u32le(12))
-            let name = nameLen > 0 && body.count >= 16 + nameLen
-                ? String(data: body.subdata(in: 16..<(16 + nameLen)), encoding: .utf8) ?? ""
-                : ""
-            if name.isEmpty || name == "." || name == ".." { continue }
-            result.append(RemoteFile(name: name, path: path.hasSuffix("/") ? path + name : path + "/" + name,
-                                      isDir: (mode & 0o170000) == 0o040000, size: size,
-                                      mtime: Date(timeIntervalSince1970: Double(mtime)), mode: mode))
-        }
-        return result.sorted { l, r in
-            if l.isDir != r.isDir { return l.isDir }
-            return l.name < r.name
+            return result.sorted { l, r in
+                if l.isDir != r.isDir { return l.isDir }
+                return l.name < r.name
+            }
         }
     }
 
