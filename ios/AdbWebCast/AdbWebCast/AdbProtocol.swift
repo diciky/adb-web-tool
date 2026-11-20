@@ -23,8 +23,9 @@ enum AdbCmd {
     static let clse: UInt32 = 0x45534c43 // "CLSE"
     static let fail: UInt32 = 0x4c494146 // "FAIL"
 
-    static let version: UInt32 = 0x01000000      // ADB 协议版本 1.0.0
-    static let maxData: UInt32 = 1024 * 1024     // 单帧最大负载（dadb 用 1MB）
+    // 官方 adb 使用的协议版本号（0x01000000 会被部分固件的版本校验拒绝）
+    static let version: UInt32 = 0x01000001
+    static let maxData: UInt32 = 1024 * 1024     // 我方单帧最大负载（官方 adb server 同值）
     static let connectPayload = "host::\u{0}"
 }
 
@@ -239,6 +240,11 @@ final class AdbClient {
     /// 正确做法（adbkit/adb-shell 的 packet store）：按 arg1(localId) 暂存，
     /// 下次读该通道的帧时优先从池里匹配，绝不因乱序/残留误判协议错误。
     private static var packetStore: [UInt32: [AdbMessage]] = [:]
+    /// 电视在握手 CNXN 回复里广播的 max_payload（arg1）。
+    /// 官方 adb server 的铁律：发往设备的每一帧负载不得超过设备广播的 maxdata，
+    /// 超限会被 adbd 的 check_header 直接判为坏包并杀掉整个连接（表现为推送挂死/断开）。
+    /// 老固件（FireOS 5 / 老安卓盒子）通常只有 4096 或 64KB，绝不能按我方 1MB/64KB 硬发。
+    private static var deviceMaxData: UInt32 = 4096
 
     private var socket: AdbSocket { Self.sharedSocket }
 
@@ -257,6 +263,7 @@ final class AdbClient {
         // 设备变更或旧连接已断 → 重建连接并握手
         Self.sharedSocket.closeSocket()
         Self.packetStore.removeAll()   // 新连接，丢弃旧通道的残留帧
+        Self.deviceMaxData = 4096     // 新连接重新协商，先按最保守值发
         do {
             postStage("正在连接电视 \(host):\(port)…")
             try Self.sharedSocket.connect(host: host, port: port)
@@ -281,7 +288,10 @@ final class AdbClient {
         while Date() < deadline {
             let reply = try socket.receiveMessage()
             if reply.command == AdbCmd.cnxn {
-                postStage("授权成功，正在读取设备信息…")
+                // 关键：CNXN 回复 arg0=版本 arg1=设备 maxdata。此后所有 WRTE 负载
+                // 都必须 ≤ 该值（官方 adb server 的 min(MAX_PAYLOAD, 设备 maxdata) 行为）。
+                if reply.arg1 > 0 { Self.deviceMaxData = min(reply.arg1, AdbCmd.maxData) }
+                postStage("授权成功（帧上限 \(Self.deviceMaxData)B），正在读取设备信息…")
                 return
             }
             if reply.command == AdbCmd.auth && reply.arg0 == 1 {
@@ -479,12 +489,31 @@ final class AdbClient {
 
     private func openSync() throws -> (UInt32, UInt32) { try open("sync:\u{0}") }
 
-    /// 发送一个 sync 包（4 字节 ID + 4 字节小端长度 + body），封装在 A_WRTE 中
-    private func sendSyncPacket(_ id: String, body: Data, local: UInt32, remote: UInt32) throws {
-        var payload = Data(id.utf8)              // 恰好 4 字节 ASCII
-        payload.append(contentsOf: UInt32(body.count).leBytes)
-        payload.append(body)
+    /// 单个 WRTE 负载上限 = min(64KB, 设备 maxdata)。与 adbkit 的 DATA_MAX_LENGTH=65536
+    /// 一致，并叠加官方 adb server 的「不超过设备广播 maxdata」规则。
+    private var frameLimit: Int {
+        max(1024, min(64 * 1024, Int(Self.deviceMaxData)))
+    }
+
+    private func sendWrte(_ payload: Data, local: UInt32, remote: UInt32) throws {
         try socket.sendMessage(AdbMessage(command: AdbCmd.wrte, arg0: local, arg1: remote, data: payload))
+    }
+
+    /// 发送一个 sync 包（4 字节 ID + 4 字节小端长度 + body）。
+    /// 关键修复：sync 包头单独一帧、body 按设备 maxdata 分帧——这正是官方 adb server
+    /// 转发数据时的分帧方式。旧实现把 8 字节包头和 64KB body 拼进同一个 WRTE（65548 字节），
+    /// 一旦超过设备 max_payload（老固件 4096/64KB），adbd 的 check_header 会判为坏包
+    /// 并直接断开整个连接——表现为"安装一直卡住/安装中无响应"。
+    private func sendSyncFrame(_ id: String, body: Data, local: UInt32, remote: UInt32) throws {
+        var header = Data(id.utf8)
+        header.append(contentsOf: UInt32(body.count).leBytes)
+        try sendWrte(header, local: local, remote: remote)
+        var off = 0
+        while off < body.count {
+            let n = min(frameLimit, body.count - off)
+            try sendWrte(body.subdata(in: off..<(off + n)), local: local, remote: remote)
+            off += n
+        }
     }
 
     /// 读取一个 sync 响应包，返回 (4 字节 ID, body)。跳过传输层 OKAY。
@@ -505,7 +534,7 @@ final class AdbClient {
         let (local, remote) = try openSync()
         defer { closeChannel(local: local, remote: remote) }
         let mode: UInt32 = 0o100644
-        try sendSyncPacket("SEND", body: "\(remotePath),\(mode)".data(using: .utf8)!, local: local, remote: remote)
+        try sendSyncFrame("SEND", body: "\(remotePath),\(mode)".data(using: .utf8)!, local: local, remote: remote)
 
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.intValue ?? 0
         guard let handle = try? FileHandle(forReadingFrom: localURL) else {
@@ -514,13 +543,13 @@ final class AdbClient {
         defer { try? handle.close() }
         var sent = 0
         while true {
-            let chunk = (try? handle.read(upToCount: 64 * 1024)) ?? Data()
+            let chunk = (try? handle.read(upToCount: frameLimit)) ?? Data()
             if chunk.isEmpty { break }
-            try sendSyncPacket("DATA", body: chunk, local: local, remote: remote)
+            try sendSyncFrame("DATA", body: chunk, local: local, remote: remote)
             sent += chunk.count
             progress(fileSize > 0 ? min(99, Int(Double(sent) / Double(fileSize) * 100)) : 50)
         }
-        try sendSyncPacket("DONE", body: Data(UInt32(Date().timeIntervalSince1970).leBytes), local: local, remote: remote)
+        try sendSyncFrame("DONE", body: Data(UInt32(Date().timeIntervalSince1970).leBytes), local: local, remote: remote)
 
         let (id, body) = try receiveSyncPacket(local: local, remote: remote)
         if id == "FAIL" {
@@ -537,7 +566,7 @@ final class AdbClient {
         socket.setReadTimeout(90)
         let (local, remote) = try openSync()
         defer { closeChannel(local: local, remote: remote) }
-        try sendSyncPacket("RECV", body: remotePath.data(using: .utf8)!, local: local, remote: remote)
+        try sendSyncFrame("RECV", body: remotePath.data(using: .utf8)!, local: local, remote: remote)
         FileManager.default.createFile(atPath: localURL.path, contents: nil)
         guard let handle = try? FileHandle(forWritingTo: localURL) else {
             throw AdbError.commandFailed("无法写入本地文件")
@@ -561,7 +590,7 @@ final class AdbClient {
         socket.setReadTimeout(90)
         let (local, remote) = try openSync()
         defer { closeChannel(local: local, remote: remote) }
-        try sendSyncPacket("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
+        try sendSyncFrame("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
         var result: [RemoteFile] = []
         while true {
             let (id, body) = try receiveSyncPacket(local: local, remote: remote)
@@ -588,17 +617,27 @@ final class AdbClient {
         }
     }
 
-    /// 截图：screencap -p → PNG。部分老设备把 \n 输出成 \r\n，需还原。
+    /// 截图：完全对齐 adbkit（Web 版经官方 adb server 的实际调用）——
+    /// 命令 `echo && screencap -p 2>/dev/null`：
+    /// 1) 先 echo 输出一个换行，用于探测本流的新行约定；
+    /// 2) stderr 丢弃，防止老设备把告警并进 shell 输出污染 PNG；
+    /// 3) 仅当探测到 CRLF（设备 shell 走 PTY 把 \n 换成 \r\n）才做 \r\n→\n 还原，
+    ///    否则原样透传。旧实现"只要 PNG 里出现 0d0a 就全量替换"会把合法 PNG 数据
+    ///    改坏（压缩流里几乎必然有 0d0a 字节对）→ 一直报"截图数据无效"。
     func screenshot() throws -> Data {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
-        var png = try shellData("screencap -p", timeout: 90)
-        let crlf = Data([0x0d, 0x0a]), lf = Data([0x0a])
-        if png.range(of: crlf) != nil {
-            var fixed = Data(); var i = 0
-            while i < png.count {
-                if i + 1 < png.count, png[i] == 0x0d, png[i + 1] == 0x0a {
-                    fixed.append(lf); i += 2
-                } else { fixed.append(png[i]); i += 1 }
+        let raw = try shellData("echo && screencap -p 2>/dev/null", timeout: 90)
+        guard let nl = raw.firstIndex(of: 0x0a) else { return raw }
+        let crlfMangled = nl > raw.startIndex && raw[raw.index(before: nl)] == 0x0d
+        var png = raw.subdata(in: raw.index(after: nl)..<raw.endIndex)   // 丢弃 echo 的探测行
+        if crlfMangled {
+            var fixed = Data(); fixed.reserveCapacity(png.count)
+            let bytes = [UInt8](png)
+            var i = 0
+            while i < bytes.count {
+                if i + 1 < bytes.count, bytes[i] == 0x0d, bytes[i + 1] == 0x0a {
+                    fixed.append(0x0a); i += 2
+                } else { fixed.append(bytes[i]); i += 1 }
             }
             png = fixed
         }

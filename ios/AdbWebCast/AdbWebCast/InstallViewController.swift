@@ -9,6 +9,7 @@ final class InstallViewController: UIViewController {
     private var apkURL: URL?
     private var installing = false
     private var pendingPanel: (([URL]?) -> Void)?
+    private var stageObserver: NSObjectProtocol?
 
     private let deviceLabel: UILabel = {
         let l = UILabel()
@@ -77,6 +78,17 @@ final class InstallViewController: UIViewController {
         view.backgroundColor = .systemBackground
         deviceLabel.text = deviceModel.isEmpty ? host.serial : "\(deviceModel)\n\(host.serial)"
         buildUI()
+        // 握手各阶段实时上屏：连接卡住时能看到卡在哪一步（不再只有"正在连接"）
+        stageObserver = NotificationCenter.default.addObserver(
+            forName: .adbConnectionStage, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let text = note.object as? String else { return }
+            self?.statusLabel.text = text
+        }
+    }
+
+    deinit {
+        if let o = stageObserver { NotificationCenter.default.removeObserver(o) }
     }
 
     private func buildUI() {

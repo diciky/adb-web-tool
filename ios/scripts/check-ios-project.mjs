@@ -105,6 +105,17 @@ for (const [needle, desc] of protoMust) {
 if (!proto.includes('return (local, reply.arg0)')) fail('remoteId 应取响应 arg0');
 // 设备信息命令必须让 key 与值同一行（echo KEY=$(...)），否则解析全空。
 if (!proto.includes('echo M=$(getprop')) fail('设备信息命令格式错误：值未与 key 同行会导致信息全空');
+// v2.7.0 帧上限修复：必须读取 CNXN 回复的设备 maxdata 并按它分帧（官方 adb server 行为）。
+// 超限帧会被 adbd check_header 杀掉连接（安装卡死）。
+if (!proto.includes('deviceMaxData')) fail('缺少 deviceMaxData（未按电视广播的 max_payload 限制帧大小，推送会被 adbd 杀连接）');
+if (!/AdbCmd\.cnxn[\s\S]{0,300}deviceMaxData = min\(reply\.arg1/.test(proto)) fail('握手未从 CNXN 回复读取设备 maxdata');
+if (!proto.includes('func sendSyncFrame')) fail('缺少 sendSyncFrame（sync 包头与 body 必须分帧发送，单帧负载不得超过设备 maxdata）');
+if (!proto.includes('func sendWrte')) fail('缺少 sendWrte 分帧发送');
+if (!proto.includes('frameLimit')) fail('缺少 frameLimit（单帧上限 min(64KB, 设备 maxdata)）');
+// v2.7.0 截图修复：adbkit 同款命令（echo 探测行 + stderr 重定向）+ CRLF 自动探测。
+if (!proto.includes('echo && screencap -p 2>/dev/null')) fail('截图命令未对齐 adbkit（echo 探测行 + 2>/dev/null 防污染）');
+if (!proto.includes('crlfMangled')) fail('截图缺少 CRLF 自动探测（盲目 \r\n→\n 替换会改坏合法 PNG）');
+if (!proto.includes('0x01000001')) fail('CNXN 版本应为官方 0x01000001');
 if (!failed) ok('ADB 协议常量与帧层关键点齐全');
 
 // ---------- 内置鉴权密钥 ----------
