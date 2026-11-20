@@ -687,7 +687,10 @@ final class AdbClient {
             let len = Int(lenData.u32le(0))
             guard len >= 0 else { throw AdbError.protocolError("sync 包长度异常 \(len)") }
             body = len > 0 ? (try readSyncBytes(len, local: local, remote: remote)) ?? Data() : Data()
-            AdbLog.log("sync<\(id) len=\(len)")
+            // 关键：绝不逐帧打印 DATA。一个 94MB 的 APK = 1500 个 64KB 帧，
+            // 会把 AdbLog 的 1500 行环形缓冲全部刷满，把 RECV/解析失败等诊断日志挤出，
+            // 导致「日志里全是 sync<DATA、看不到任何错误」。仅对非 DATA 包与非 DONE 控制帧打日志。
+            if id != "DATA" { AdbLog.log("sync<\(id) len=\(len)") }
         default:
             throw AdbError.protocolError("sync 未知响应包 \(id)")
         }
@@ -751,19 +754,34 @@ final class AdbClient {
             defer { closeChannel(local: local, remote: remote) }
             AdbLog.log("RECV \(remotePath)")
             try sendSyncFrame("RECV", body: remotePath.data(using: .utf8)!, local: local, remote: remote)
-            FileManager.default.createFile(atPath: localURL.path, contents: nil)
-            guard let handle = try? FileHandle(forWritingTo: localURL) else {
-                throw AdbError.commandFailed("无法写入本地文件")
-            }
-            defer { try? handle.close() }
+            // 先在内存累积完整内容再一次性落盘：避免 FileHandle 逐帧写入时吞掉 IO 错误、
+            // 或 withAutoReconnect 重试因 createFile 不截断而尾部残留旧数据导致 APK 损坏。
+            var received = Data()
+            var frameCount = 0
             while let (id, body) = try receiveSyncPacket(local: local, remote: remote) {
                 if id == "DONE" { break }
                 if id == "FAIL" {
                     throw AdbError.commandFailed("下载失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
                 }
                 guard id == "DATA" else { throw AdbError.protocolError("sync 返回未知包 \(id)") }
-                try? handle.write(contentsOf: body)
+                received.append(body)
+                frameCount += 1
             }
+            guard !received.isEmpty else {
+                throw AdbError.protocolError("sync 收到空文件 \(remotePath)")
+            }
+            // 原子写入：先写临时文件再原子替换目标，避免中途失败留下半截损坏文件。
+            let tmpURL = localURL.deletingLastPathComponent()
+                .appendingPathComponent("pull_\(UUID().uuidString).tmp")
+            do {
+                try received.write(to: tmpURL, options: .atomic)
+                try? FileManager.default.removeItem(at: localURL)
+                try FileManager.default.moveItem(at: tmpURL, to: localURL)
+            } catch {
+                try? FileManager.default.removeItem(at: tmpURL)
+                throw AdbError.commandFailed("写入本地文件失败：\(error.localizedDescription)")
+            }
+            AdbLog.log("RECV 完成 \(remotePath) \(received.count)B / \(frameCount) 帧")
             progress(100)
         }
     }

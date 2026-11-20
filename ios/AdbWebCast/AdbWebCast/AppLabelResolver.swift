@@ -242,7 +242,10 @@ enum AppLabelResolver {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        guard !path.isEmpty else { return nil }
+        guard !path.isEmpty else {
+            AdbLog.log("资源解析跳过 \(pkg)：无 APK 路径", level: "W")
+            return nil
+        }
 
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("asset_\(UUID().uuidString).apk")
@@ -252,12 +255,21 @@ enum AppLabelResolver {
             try client.pull(remotePath: path, to: tmp, progress: { _ in })
             let size = (try? FileManager.default.attributesOfItem(atPath: tmp.path)[.size] as? NSNumber)?.intValue ?? 0
             // 超大游戏包跳过，避免手机内存吃满；这类包回退包名与占位图标。
-            guard size > 0, size <= 160 * 1024 * 1024 else { return nil }
-            guard let data = try? Data(contentsOf: tmp, options: .mappedIfSafe) else { return nil }
+            guard size > 0, size <= 160 * 1024 * 1024 else {
+                AdbLog.log("资源解析跳过 \(pkg)：APK 大小异常 \(size)B", level: "W")
+                return nil
+            }
+            guard let data = try? Data(contentsOf: tmp, options: .mappedIfSafe) else {
+                AdbLog.log("资源解析失败 \(pkg)：无法读取 APK 数据", level: "W")
+                return nil
+            }
             let bytes = Bytes(data)
             let entries = zipEntries(bytes)
             guard let manifestData = extract("AndroidManifest.xml", from: bytes, entries: entries),
-                  let info = manifestInfo(in: manifestData) else { return nil }
+                  let info = manifestInfo(in: manifestData) else {
+                AdbLog.log("资源解析失败 \(pkg)：ZIP 条目 \(entries.count) 个，Manifest 解析失败", level: "W")
+                return nil
+            }
 
             var label: String?
             switch info.label {
@@ -274,6 +286,7 @@ enum AppLabelResolver {
             }
 
             let icon = findIcon(iconId: info.iconId, bytes: bytes, entries: entries)
+            AdbLog.log("资源解析完成 \(pkg)：名称=\(label ?? "无") 图标=\(icon == nil ? "无" : "\(icon!.count)B")")
             return AssetResult(label: label, iconData: icon, apkPath: path)
         } catch {
             AdbLog.log("解析应用资源失败 \(pkg): \(error.localizedDescription)", level: "W")

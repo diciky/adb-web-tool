@@ -256,6 +256,12 @@ for (const needle of ['enum AdbLog', 'static func log(', 'static func dump()', '
 }
 if (!proto.includes('AdbLog.log(')) fail('AdbProtocol 未接入运行日志（无法远程诊断协议问题）');
 if (proto.match(/AdbLog\.log/g).length < 15) fail('AdbProtocol 日志埋点不足（连接/握手/OPEN/shell/sync 均需覆盖）');
+// v3.6.1：sync DATA 帧绝不逐帧打日志（1500 帧会刷满缓冲区淹没诊断日志）；
+// pull 用内存累积 + 原子写，避免重试残留/半截损坏 APK。
+if (!proto.includes('if id != "DATA" { AdbLog.log')) fail('sync DATA 帧仍在逐帧打日志（会淹没诊断日志）');
+for (const needle of ['var received = Data()', 'received.append(body)', 'received.write(to: tmpURL', 'moveItem(at: tmpURL']) {
+  if (!proto.includes(needle)) fail(`pull 可靠性改写缺少 ${needle}`);
+}
 if (!screenSrc.includes('UIImageWriteToSavedPhotosAlbum')) fail('屏幕页缺少保存到相册');
 if (!screenSrc.includes('while live')) fail('屏幕页缺少实时刷屏循环');
 const appsSrc = readFileSync(join(swiftDir, 'AppsViewController.swift'), 'utf8');
@@ -268,6 +274,10 @@ for (const needle of ['iconId', 'entryName', 'findIcon', 'saveIcon', 'applicatio
                       'adbweb.app.assets.v3', 'isResolved', 'cached(pkg:', 'cacheQueue', 'needsIcon',
                       '三次兜底', 'uncompressedSize']) {
   if (!resolverSrc.includes(needle)) fail(`应用资源解析/缓存缺少 ${needle}`);
+}
+// v3.6.1：资源解析失败点必须留 W 日志，否则日志被 sync 刷屏后无法定位失败环节
+for (const needle of ['资源解析跳过', '资源解析失败', '资源解析完成', 'ZIP 条目', '无法读取 APK 数据']) {
+  if (!resolverSrc.includes(needle)) fail(`资源解析诊断日志缺少 ${needle}`);
 }
 // v3.4.2：自启管理必须一次全量 dumpsys + 从 Package[...] 段取包名，禁止再切路径（路径 hash 的 == 会污染包名）
 // v3.6.0：全量 dumpsys 实际没有 Package[...] 分段，改为解析 BOOT_COMPLETED: 下的组件行，

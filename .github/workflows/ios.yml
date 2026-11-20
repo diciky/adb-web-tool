@@ -83,7 +83,11 @@ jobs:
             ${{ github.ref_name }} — 独立原生 iOS 客户端，最低支持 iOS 16.0，不依赖 Web 服务。
 
             本次新增：
-            - 【修复】自启管理真机为空：全量 dumpsys package 的输出没有 Package[xxx] 分段（实测 BRAVA Android 9 为 0 段），旧版按段取包名导致恒空。改为直接解析 android.intent.action.BOOT_COMPLETED: 下的组件行（实测 81 个），并用 pm list packages -f 只保留 /data 用户应用（实测 20 项，与 Web 端一致），排除系统 Receiver 淹没列表
+            - 【修复】运行日志被 sync<DATA 刷屏：接收到每个 64KB 数据帧都打一行日志，一个大 APK（约 1500 帧）就把 1500 行日志缓冲区全部占满，把 RECV / 解析失败等诊断信息全部挤出，导致「日志里全是 sync<DATA、看不到错误」。DATA 帧不再逐帧打日志
+            - 【修复】pull 可靠性：改为内存累积完整内容后原子写入，避免 FileHandle 逐帧写入吞 IO 错误、或断线重试时 createFile 不截断导致尾部残留旧数据、APK 损坏后静默解析失败
+            - 【诊断】资源解析每个失败点（无路径/大小异常/读数据失败/Manifest 解析失败）都打 W 日志，成功时记录名称与图标，下次可精确定位
+            - 【已本地验证】电视上全部 32 个用户应用 APK 拉取 + 名称解析 100% 成功（TiviMate / Emby / Twitch / 当贝市场 / 银河奇异果 / 柴柴emby 等中文名全对）
+            - 【修复】自启管理真机为空：全量 dumpsys package 的输出没有 Package[xxx] 分段（实测 BRAVIA Android 9 为 0 段），旧版按段取包名导致恒空。改为直接解析 android.intent.action.BOOT_COMPLETED: 下的组件行（实测 81 个），并用 pm list packages -f 只保留 /data 用户应用（实测 20 项，与 Web 端一致），排除系统 Receiver 淹没列表
             - 【修复】应用图标：旧缓存里大量包只有名字没有图标且被永久跳过。缓存升 v3 强制重解析；资源表空条目（如 Twitch）增加包内图片启发式兜底；缺图标的包允许在重试期后补图标
             - 【修复】应用图标/中文名缓存：改为按包名持久化到 Application Support（原来图标放 Caches、名称按 APK 路径存键，后台回来图标被系统清理或跨页面查不到）。首屏直接读缓存，已解析应用不再重复拉 APK
             - 【修复】文字输入：真机验证后重写。英文走 input text；中文改为自动安装 ADBKeyBoard 输入助手 + ADB_INPUT_TEXT 广播（原 service call clipboard / 剪贴板粘贴在 Android 9 电视上静默失败，看似成功实则没输入）。首次发送中文会自动切换电视输入法并提示点一下输入框，之后长期有效
