@@ -266,6 +266,14 @@ for (const needle of ['用户应用', '系统应用', 'cachedIcon', 'placeholder
 for (const needle of ['iconId', 'entryName', 'findIcon', 'cacheIcon']) {
   if (!resolverSrc.includes(needle)) fail(`应用资源解析缺少 ${needle}`);
 }
+// v3.4.2：自启管理必须一次全量 dumpsys + 从 Package[...] 段取包名，禁止再切路径（路径 hash 的 == 会污染包名）
+const autoSrc = readFileSync(join(swiftDir, 'AutostartViewController.swift'), 'utf8');
+for (const needle of ['dumpsys package', 'parseAutostart', 'packageName(from:', 'BOOT_COMPLETED', 'RECEIVE_BOOT_COMPLETED']) {
+  if (!autoSrc.includes(needle)) fail(`自启管理缺少 ${needle}`);
+}
+if (/pm list packages -f/.test(autoSrc) && !autoSrc.includes('packageName(from:')) {
+  fail('自启管理仍在从 pm list packages -f 路径切包名（== 污染风险）');
+}
 if (!failed) ok('project.pbxproj 结构完整且引用全部源码');
 
 // ---------- ipa 构建脚本 ----------
