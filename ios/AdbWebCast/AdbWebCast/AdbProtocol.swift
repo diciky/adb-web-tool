@@ -177,6 +177,15 @@ final class AdbSocket {
 
     func sendMessage(_ msg: AdbMessage) throws { try writeAll(msg.encoded) }
 
+    /// 仅在 timeoutMs 内有数据可读时读一帧，否则返回 nil。用于关闭通道时快速消费对方确认，
+    /// 不阻塞（实时屏幕循环每帧都会开关通道，不能用整秒超时）。
+    func receiveMessageIfAvailable(timeoutMs: Int = 30) -> AdbMessage? {
+        var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        let ready = withUnsafeMutablePointer(to: &pfd) { poll($0, 1, Int32(timeoutMs)) }
+        if ready <= 0 { return nil }
+        return try? receiveMessage()
+    }
+
     func receiveMessage() throws -> AdbMessage {
         let h = try receiveExact(24)
         let command = UInt32.fromLE(Array(h[0..<4]))
@@ -225,6 +234,11 @@ final class AdbClient {
     private static let connLock = NSRecursiveLock()
     private static var connectedKey = ""
     private static var idCounter: UInt32 = 1
+    /// 帧缓存池：ADB 是多路复用协议，服务端可能先发来"上一条通道"的残留帧
+    /// （如 WRTE/CLSE）。旧实现把它们当无关帧丢弃并计数报错，导致"过多无关帧"。
+    /// 正确做法（adbkit/adb-shell 的 packet store）：按 arg1(localId) 暂存，
+    /// 下次读该通道的帧时优先从池里匹配，绝不因乱序/残留误判协议错误。
+    private static var packetStore: [UInt32: [AdbMessage]] = [:]
 
     private var socket: AdbSocket { Self.sharedSocket }
 
@@ -242,6 +256,7 @@ final class AdbClient {
         if Self.connectedKey == key && Self.sharedSocket.isValid { return }
         // 设备变更或旧连接已断 → 重建连接并握手
         Self.sharedSocket.closeSocket()
+        Self.packetStore.removeAll()   // 新连接，丢弃旧通道的残留帧
         do {
             postStage("正在连接电视 \(host):\(port)…")
             try Self.sharedSocket.connect(host: host, port: port)
@@ -306,55 +321,85 @@ final class AdbClient {
         NotificationCenter.default.post(name: .adbConnectionStage, object: text)
     }
 
+    /// 服务端发来的帧：arg0 = remoteId，arg1 = localId。
+    /// allowZeros 用于 OPEN 响应——部分设备的 OPEN OKAY 帧两参数可能带 0。
+    private func argsMatch(_ m: AdbMessage, local: UInt32, remote: UInt32?, allowZeros: Bool = false) -> Bool {
+        if allowZeros {
+            return (m.arg1 == 0 || m.arg1 == local) && (remote == nil || m.arg0 == 0 || m.arg0 == remote!)
+        }
+        return m.arg1 == local && (remote == nil || m.arg0 == remote!)
+    }
+
+    /// 从缓存池或 socket 读取一帧：属于指定通道、且命令类型在 expected 内。
+    /// 关键修复：不匹配的帧（残留/乱序）存入 packetStore 而非丢弃计数；
+    /// 传输层 OKAY（对方确认我们发出的 WRTE）无信息量，直接消费不计入任何上限——
+    /// 这正是"过多 OKAY 帧"误报的根因（push 大文件时几百个 OKAY 是正常流控）。
+    private func readFrame(local: UInt32, remote: UInt32?, expected: Set<UInt32>,
+                           allowZeros: Bool = false, timeout: TimeInterval? = nil) throws -> AdbMessage {
+        // 1) 先扫缓存池，找本通道已暂存的匹配帧
+        if var bucket = Self.packetStore[local] {
+            for (i, m) in bucket.enumerated() {
+                if argsMatch(m, local: local, remote: remote, allowZeros: allowZeros) && expected.contains(m.command) {
+                    bucket.remove(at: i)
+                    if bucket.isEmpty { Self.packetStore[local] = nil } else { Self.packetStore[local] = bucket }
+                    return m
+                }
+            }
+        }
+        // 2) 从 socket 读，直到匹配（超时由 socket.receiveMessage 的 poll 硬超时控制）
+        let deadline = Date().addingTimeInterval(timeout ?? 90)
+        while Date() < deadline {
+            let m = try socket.receiveMessage()
+            if argsMatch(m, local: local, remote: remote, allowZeros: allowZeros) && expected.contains(m.command) {
+                return m
+            }
+            // 传输层 OKAY 是对我们 WRTE 的确认，无数据，直接丢弃；其余帧按通道暂存
+            if m.command != AdbCmd.okay {
+                Self.packetStore[m.arg1, default: []].append(m)
+            }
+        }
+        throw AdbError.protocolError("读取响应超时（通道 \(local)）")
+    }
+
     private func open(_ destination: String) throws -> (UInt32, UInt32) {
         let local = allocLocalId()
         var svc = destination
         if !svc.hasSuffix("\u{0}") { svc += "\u{0}" }
         try socket.sendMessage(AdbMessage(command: AdbCmd.open, arg0: local, arg1: 0,
                                            data: svc.data(using: .utf8)!))
-        // 容错：跳过上一条通道遗留的 OKAY/CLSE 帧（历史版本没回 CLSE 的 OKAY 会残留）。
-        // 直到读到「本次 local id 的 OKAY」或 FAIL 才返回，彻底避免残留帧污染。
-        var waitedFrames = 0
-        while true {
-            let reply = try socket.receiveMessage()
-            if reply.command == AdbCmd.okay && reply.arg1 == local {
-                return (local, reply.arg0)
-            }
-            if reply.command == AdbCmd.fail {
-                throw AdbError.commandFailed(String(data: reply.data, encoding: .utf8) ?? "服务打开失败")
-            }
-            waitedFrames += 1
-            if waitedFrames > 16 { throw AdbError.protocolError("OPEN 期间收到过多无关帧") }
+        let reply = try readFrame(local: local, remote: nil, expected: [AdbCmd.okay, AdbCmd.fail], allowZeros: true)
+        if reply.command == AdbCmd.fail {
+            throw AdbError.commandFailed(String(data: reply.data, encoding: .utf8) ?? "服务打开失败")
         }
+        return (local, reply.arg0)
     }
 
+    /// 关闭通道：发 CLSE，并读对方的 CLSE 确认完成双向关闭（短超时容错）。
+    /// 旧实现发完 CLSE 就走，对方回的 CLSE 残留在 socket 污染下一条命令。
     private func closeChannel(local: UInt32, remote: UInt32) {
         try? socket.sendMessage(AdbMessage(command: AdbCmd.clse, arg0: local, arg1: remote, data: Data()))
+        // 尽力消费对方的 CLSE 确认（30ms 上限，不阻塞实时屏幕刷新）；
+        // 若读到的是别的通道帧，归入缓存池，绝不丢弃。
+        if let m = socket.receiveMessageIfAvailable(30) {
+            if !(m.arg1 == local && (m.command == AdbCmd.clse || m.command == AdbCmd.okay)) {
+                Self.packetStore[m.arg1, default: []].append(m)
+            }
+        }
+        Self.packetStore[local] = nil
     }
 
-    /// 读取属于某通道的下一个 WRTE 数据帧：跳过对方回的传输层 OKAY；收到 WRTE 回 OKAY；CLSE 表示结束。
+    /// 读取属于某通道的下一个 WRTE 数据帧：OKAY 由 readFrame 自动消费；收到 WRTE 回 OKAY；CLSE 回 CLSE 表示结束。
     private func receiveStreamData(local: UInt32, remote: UInt32) throws -> Data? {
-        var idleFrames = 0
-        while true {
-            let msg = try socket.receiveMessage()
-            if msg.command == AdbCmd.okay {
-                // 对方确认我们发出的 WRTE，无需再回，跳过
-                idleFrames += 1
-                if idleFrames > 64 { throw AdbError.protocolError("通道收到过多 OKAY 帧（流控异常）") }
-                continue
-            } else if msg.command == AdbCmd.wrte {
-                try socket.sendMessage(AdbMessage(command: AdbCmd.okay, arg0: local, arg1: remote, data: Data()))
-                return msg.data
-            } else if msg.command == AdbCmd.clse {
-                // 关键：收到对方的 CLSE 必须回 OKAY，否则对方通道不关闭、状态错乱。
-                try? socket.sendMessage(AdbMessage(command: AdbCmd.okay, arg0: local, arg1: remote, data: Data()))
-                return nil
-            } else if msg.command == AdbCmd.fail {
-                throw AdbError.commandFailed(String(data: msg.data, encoding: .utf8) ?? "命令失败")
-            } else {
-                idleFrames += 1
-                if idleFrames > 64 { throw AdbError.protocolError("通道收到过多无关帧（流控异常）") }
-            }
+        let msg = try readFrame(local: local, remote: remote, expected: [AdbCmd.wrte, AdbCmd.clse, AdbCmd.fail])
+        if msg.command == AdbCmd.wrte {
+            try socket.sendMessage(AdbMessage(command: AdbCmd.okay, arg0: local, arg1: remote, data: Data()))
+            return msg.data
+        } else if msg.command == AdbCmd.clse {
+            // 关键：ADB 协议要求收到对方 CLSE 回 CLSE（不是 OKAY），否则通道状态错乱。
+            try? socket.sendMessage(AdbMessage(command: AdbCmd.clse, arg0: local, arg1: remote, data: Data()))
+            return nil
+        } else {
+            throw AdbError.commandFailed(String(data: msg.data, encoding: .utf8) ?? "命令失败")
         }
     }
 
@@ -391,16 +436,19 @@ final class AdbClient {
     func readDeviceInfo() -> DeviceInfo {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
         var d = DeviceInfo()
+        // 关键：必须用 echo KEY=$(getprop ...) 保证 key 与值在【同一行】。
+        // 旧写法 echo KEY=;getprop ... 会输出 "KEY=" 和值两行，解析时值全部落空
+        // （表现为设备信息页除型号外全是"—"）。
         let cmd = [
-            "echo M=;getprop ro.product.model",
-            "echo B=;getprop ro.product.brand",
-            "echo V=;getprop ro.product.manufacturer",
-            "echo A=;getprop ro.build.version.release",
-            "echo S=;getprop ro.build.version.sdk",
-            "echo N=;getprop ro.serialno",
-            "echo P=;getprop ro.board.platform",
-            "echo R=;wm size",
-            "echo C=;dumpsys battery | grep -i level",
+            "echo M=$(getprop ro.product.model)",
+            "echo B=$(getprop ro.product.brand)",
+            "echo V=$(getprop ro.product.manufacturer)",
+            "echo A=$(getprop ro.build.version.release)",
+            "echo S=$(getprop ro.build.version.sdk)",
+            "echo N=$(getprop ro.serialno)",
+            "echo P=$(getprop ro.board.platform)",
+            "echo R=$(wm size)",
+            "echo C=$(dumpsys battery | grep -i level)",
         ].joined(separator: ";")
         guard let out = try? shell(cmd, timeout: 15) else { return d }
         var cur = ""
