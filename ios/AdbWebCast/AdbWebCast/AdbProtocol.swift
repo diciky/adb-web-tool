@@ -540,7 +540,36 @@ final class AdbClient {
 
     // MARK: sync 子协议
 
-    private func openSync() throws -> (UInt32, UInt32) { try open("sync:\u{0}") }
+    private func openSync() throws -> (UInt32, UInt32) {
+        let ch = try open("sync:\u{0}")
+        Self.syncBuffer.removeAll()   // 新通道/重试后都从空流开始
+        return ch
+    }
+
+    // MARK: sync 字节流读取（黏包/跨帧安全，对齐 adbkit 的 parser 行为）
+    // 关键修复：adbd 会把多个 DENT/DATA 包黏进一个 WRTE 帧、也会把一个包拆到多帧。
+    // 旧实现按"帧=完整包"解析，大目录（如 /sdcard）必然黏包 → 解析错位 → 死循环挂起。
+    // 现在按字节流读：先凑够 8 字节头，再按头里的长度凑够 body，与帧边界完全解耦。
+    private static var syncBuffer = Data()
+
+    /// 读取 n 字节 sync 流数据；对端 CLSE（EOF）返回 nil。
+    private func readSyncBytes(_ n: Int, local: UInt32, remote: UInt32) throws -> Data? {
+        while Self.syncBuffer.count < n {
+            let msg = try readFrame(local: local, remote: remote, expected: [AdbCmd.wrte, AdbCmd.clse, AdbCmd.fail])
+            if msg.command == AdbCmd.wrte {
+                try socket.sendMessage(AdbMessage(command: AdbCmd.okay, arg0: local, arg1: remote, data: Data()))
+                Self.syncBuffer.append(msg.data)
+            } else if msg.command == AdbCmd.clse {
+                try? socket.sendMessage(AdbMessage(command: AdbCmd.clse, arg0: local, arg1: remote, data: Data()))
+                return nil   // EOF
+            } else {
+                throw AdbError.commandFailed(String(data: msg.data, encoding: .utf8) ?? "sync 命令失败")
+            }
+        }
+        let out = Data(Self.syncBuffer.prefix(n))
+        Self.syncBuffer.removeSubrange(0..<min(n, Self.syncBuffer.count))
+        return out
+    }
 
     /// 单个 WRTE 负载上限 = min(64KB, 设备 maxdata)。与 adbkit 的 DATA_MAX_LENGTH=65536
     /// 一致，并叠加官方 adb server 的「不超过设备广播 maxdata」规则。
@@ -569,14 +598,15 @@ final class AdbClient {
         }
     }
 
-    /// 读取一个 sync 响应包，返回 (4 字节 ID, body)。跳过传输层 OKAY。
-    private func receiveSyncPacket(local: UInt32, remote: UInt32) throws -> (String, Data) {
-        guard let frame = try receiveStreamData(local: local, remote: remote), frame.count >= 8 else {
-            throw AdbError.protocolError("sync 响应帧异常")
+    /// 读取一个 sync 响应包，返回 (4 字节 ID, body)；EOF 返回 nil。黏包/跨帧安全。
+    private func receiveSyncPacket(local: UInt32, remote: UInt32) throws -> (String, Data)? {
+        guard let header = try readSyncBytes(8, local: local, remote: remote), header.count == 8 else {
+            return nil
         }
-        let id = String(data: frame.prefix(4), encoding: .ascii) ?? ""
-        let len = Int(frame.u32le(4))
-        let body = len > 0 ? frame.subdata(in: 8..<min(8 + len, frame.count)) : Data()
+        let id = String(data: header.prefix(4), encoding: .ascii) ?? ""
+        let len = Int(header.u32le(4))
+        guard len >= 0 else { throw AdbError.protocolError("sync 包长度异常 \(len)") }
+        let body = len > 0 ? (try readSyncBytes(len, local: local, remote: remote)) ?? Data() : Data()
         return (id, body)
     }
 
@@ -605,7 +635,9 @@ final class AdbClient {
             }
             try sendSyncFrame("DONE", body: Data(UInt32(Date().timeIntervalSince1970).leBytes), local: local, remote: remote)
 
-            let (id, body) = try receiveSyncPacket(local: local, remote: remote)
+            guard let (id, body) = try receiveSyncPacket(local: local, remote: remote) else {
+                throw AdbError.protocolError("sync 通道提前关闭")
+            }
             if id == "FAIL" {
                 throw AdbError.commandFailed("推送失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
             }
@@ -628,8 +660,7 @@ final class AdbClient {
                 throw AdbError.commandFailed("无法写入本地文件")
             }
             defer { try? handle.close() }
-            while true {
-                let (id, body) = try receiveSyncPacket(local: local, remote: remote)
+            while let (id, body) = try receiveSyncPacket(local: local, remote: remote) {
                 if id == "DONE" { break }
                 if id == "FAIL" {
                     throw AdbError.commandFailed("下载失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
@@ -650,8 +681,7 @@ final class AdbClient {
             defer { closeChannel(local: local, remote: remote) }
             try sendSyncFrame("LIST", body: path.data(using: .utf8)!, local: local, remote: remote)
             var result: [RemoteFile] = []
-            while true {
-                let (id, body) = try receiveSyncPacket(local: local, remote: remote)
+            while let (id, body) = try receiveSyncPacket(local: local, remote: remote) {
                 if id == "DONE" { break }
                 if id == "FAIL" {
                     throw AdbError.commandFailed("读取目录失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
@@ -703,7 +733,20 @@ final class AdbClient {
         return png
     }
 
-    /// 推送 + pm install 完整流程
+    /// 常见 pm install 失败码 → 用户可读的中文说明
+    private static let installErrorHints: [String: String] = [
+        "INSTALL_FAILED_VERSION_DOWNGRADE": "电视上已安装更高版本，系统拒绝降级。请先在电视上卸载旧版再装，或安装更高版本的 APK。",
+        "INSTALL_FAILED_UPDATE_INCOMPATIBLE": "已安装的同名应用签名不一致，需先卸载旧版。",
+        "INSTALL_FAILED_INSUFFICIENT_STORAGE": "电视存储空间不足，请先清理空间。",
+        "INSTALL_PARSE_FAILED_NO_CERTIFICATES": "APK 未签名或证书异常。",
+        "INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES": "与已安装应用的签名不一致，需先卸载旧版。",
+        "INSTALL_FAILED_INVALID_APK": "APK 文件损坏或不完整，请重新获取安装包。",
+        "INSTALL_FAILED_NO_MATCHING_ABIS": "APK 不含本机 CPU 架构的 so 库，无法安装。",
+        "INSTALL_FAILED_INVALID_URI": "安装路径无效。",
+        "INSTALL_FAILED_ALREADY_EXISTS": "已存在相同版本的应用。",
+    ]
+
+    /// 推送 + pm install 完整流程。-d 允许降级（-r 覆盖重装）。
     func installAPK(localURL: URL, progress: (Int) -> Void) throws -> String {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
         let base = localURL.deletingPathExtension().lastPathComponent
@@ -711,10 +754,16 @@ final class AdbClient {
         let remotePath = "/data/local/tmp/adbios_\(Int(Date().timeIntervalSince1970))_\(base).apk"
         try push(localURL: localURL, remotePath: remotePath, progress: progress)
         progress(99)
-        let output = try shell("pm install -r \(remotePath)", timeout: 120)
+        let output = try shell("pm install -r -d \(remotePath)", timeout: 120)
         _ = try? shell("rm -f \(remotePath)", timeout: 10)
         progress(100)
-        return output
+        // 把 "Failure [CODE]" 翻译成用户能看懂的提示
+        var out = output.trimmed
+        if let m = out.range(of: #"Failure \[([A-Z_]+)\]"#, options: .regularExpression) {
+            let code = out[m].replacingOccurrences(of: "Failure [", with: "").replacingOccurrences(of: "]", with: "")
+            if let hint = Self.installErrorHints[code] { out += "\n💡 \(hint)" }
+        }
+        return out
     }
 
     /// 保留共享长连接供其他功能复用（不再每次操作关闭连接、导致下次重新授权）。
