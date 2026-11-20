@@ -1,5 +1,58 @@
 import UIKit
 
+/// 自启扫描结果缓存：避免每次进入页面都跑一次全量 dumpsys package。
+/// 只缓存结构化结果，切换开关后立即失效；下拉刷新可强制重扫。
+private enum AutostartStore {
+    struct StoredEntry: Codable {
+        let pkg: String
+        let component: String
+        let enabled: Bool
+    }
+    struct Snapshot: Codable {
+        let savedAt: TimeInterval
+        let entries: [StoredEntry]
+    }
+
+    static let ttl: TimeInterval = 30 * 60
+    private static let queue = DispatchQueue(label: "adbweb.autostart.cache")
+
+    private static func fileURL(host: AdbHost) -> URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("AdbWebCast/autostart", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let key = "\(host.ip)-\(host.port)".replacingOccurrences(of: ".", with: "_")
+        return dir.appendingPathComponent("\(key).json")
+    }
+
+    static func load(host: AdbHost) -> [AutostartEntry]? {
+        queue.sync {
+            guard let url = fileURL(host: host),
+                  let data = try? Data(contentsOf: url),
+                  let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data),
+                  Date().timeIntervalSince1970 - snapshot.savedAt < ttl else { return nil }
+            return snapshot.entries.map { AutostartEntry(pkg: $0.pkg, component: $0.component, enabled: $0.enabled) }
+        }
+    }
+
+    static func save(host: AdbHost, entries: [AutostartEntry]) {
+        queue.sync {
+            guard let url = fileURL(host: host) else { return }
+            let stored = entries.map { StoredEntry(pkg: $0.pkg, component: $0.component, enabled: $0.enabled) }
+            guard let data = try? JSONEncoder().encode(Snapshot(savedAt: Date().timeIntervalSince1970, entries: stored)) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    static func invalidate(host: AdbHost) {
+        queue.sync {
+            guard let url = fileURL(host: host) else { return }
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+}
+
 /// 自启管理页：列出具备 BOOT_COMPLETED 接收器的应用，启用/禁用其开机自启组件。
 ///
 /// 实现要点：
@@ -13,6 +66,8 @@ final class AutostartViewController: UIViewController {
     private var entries: [AutostartEntry] = []
     /// 包名 -> 显示名（中文优先），用于把 component 前面的包名替换成人看得懂的名字
     private var labels: [String: String] = [:]
+    /// 包名 -> 应用图标（来自 AppLabelResolver 持久化缓存）
+    private var icons: [String: UIImage] = [:]
 
     private let tableView: UITableView = {
         let t = UITableView(frame: .zero)
@@ -42,7 +97,7 @@ final class AutostartViewController: UIViewController {
         tableView.dataSource = self
         tableView.delegate = self
         tableView.refreshControl = refresh
-        refresh.addTarget(self, action: #selector(load), for: .valueChanged)
+        refresh.addTarget(self, action: #selector(pullRefreshed), for: .valueChanged)
         let header = UIView()
         header.addSubview(statusLabel)
         NSLayoutConstraint.activate([
@@ -65,48 +120,91 @@ final class AutostartViewController: UIViewController {
         load()
     }
 
-    @objc private func load() {
+    @objc private func pullRefreshed() { load(force: true) }
+
+    private func load(force: Bool = false) {
+        // 先显示本地缓存，避免每次进页面都等一次全量 dumpsys。
+        if !force, let cached = AutostartStore.load(host: host) {
+            apply(entries: cached, fromCache: true, error: "")
+            return
+        }
+
         statusLabel.text = "正在读取开机自启项（全量扫描，约数秒）…"
         refresh.beginRefreshing()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let client = AdbClient()
             var parsed: [AutostartEntry] = []
-            var pkgLabels: [String: String] = [:]
             var err = ""
             do {
                 try client.connect(host: self.host.ip, port: self.host.port)
                 // 一次读取全部包信息，避免逐个 dumpsys（慢且易失败）
                 let dump = try client.shell("dumpsys package", timeout: 120)
                 parsed = Self.parseAutostart(from: dump)
-
-                // 用已知的应用名缓存补齐中文显示名（不额外打 APK）
-                var pkgs = Set<String>()
-                for e in parsed {
-                    let p = String(e.component.split(separator: "/").first ?? Substring(e.pkg))
-                    pkgs.insert(p)
-                }
-                for p in pkgs {
-                    if let label = AppLabelResolver.cachedLabel(pkg: p, apkPath: "") {
-                        pkgLabels[p] = label
-                    }
-                }
+                AutostartStore.save(host: self.host, entries: parsed)
                 client.disconnect()
             } catch {
                 err = error.localizedDescription
                 client.disconnect()
             }
             DispatchQueue.main.async {
-                self.entries = parsed
-                self.labels = pkgLabels
-                self.statusLabel.text = err.isEmpty
-                    ? (parsed.isEmpty
-                        ? "未发现开机自启项（该电视可能未开放第三方自启，或已全部禁用）"
-                        : "发现 \(parsed.count) 个自启项 · 点按切换启用/禁用")
-                    : "读取失败：\(err)（下拉重试）"
-                self.tableView.reloadData()
-                self.refresh.endRefreshing()
+                self.apply(entries: parsed, fromCache: false, error: err)
             }
+        }
+    }
+
+    /// 统一渲染：先灌入持久化资源缓存，再对未解析包做小批量补全。
+    private func apply(entries: [AutostartEntry], fromCache: Bool, error: String) {
+        self.entries = entries
+        var resolvedLabels: [String: String] = [:]
+        var resolvedIcons: [String: UIImage] = [:]
+        for entry in entries {
+            guard let cached = AppLabelResolver.cached(pkg: entry.pkg) else { continue }
+            if let label = cached.label, !label.isEmpty { resolvedLabels[entry.pkg] = label }
+            if let data = cached.iconData, let image = UIImage(data: data) { resolvedIcons[entry.pkg] = image }
+        }
+        self.labels = resolvedLabels
+        self.icons = resolvedIcons
+
+        if error.isEmpty {
+            if entries.isEmpty {
+                statusLabel.text = "未发现开机自启项（该电视可能未开放第三方自启，或已全部禁用）"
+            } else {
+                let suffix = fromCache ? " · 本地缓存（下拉强制重扫）" : " · 点按切换启用/禁用"
+                statusLabel.text = "发现 \(entries.count) 个自启项\(suffix)"
+            }
+        } else {
+            statusLabel.text = "读取失败：\(error)（下拉重试）"
+        }
+        tableView.reloadData()
+        refresh.endRefreshing()
+        resolveAssetsIfNeeded(for: entries)
+    }
+
+    /// 自启页只解析自己列表里的包（通常十几个），不会扫描设备上所有应用。
+    private func resolveAssetsIfNeeded(for entries: [AutostartEntry]) {
+        let pkgs = Array(Set(entries.map { $0.pkg })).filter { !AppLabelResolver.isResolved(pkg: $0) }
+        guard !pkgs.isEmpty else { return }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let client = AdbClient()
+            do {
+                try client.connect(host: self.host.ip, port: self.host.port)
+            } catch {
+                AdbLog.log("自启项资源解析连接失败：\(error.localizedDescription)", level: "W")
+                return
+            }
+            for pkg in pkgs {
+                let assets = AppLabelResolver.assets(for: pkg, apkPath: "", client: client)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if let label = assets.label, !label.isEmpty { self.labels[pkg] = label }
+                    if let data = assets.iconData, let image = UIImage(data: data) { self.icons[pkg] = image }
+                    self.tableView.reloadData()
+                }
+            }
+            client.disconnect()
         }
     }
 
@@ -233,6 +331,7 @@ final class AutostartViewController: UIViewController {
                 try client.connect(host: self.host.ip, port: self.host.port)
                 _ = try client.shell(cmd, timeout: 30)
                 client.disconnect()
+                AutostartStore.invalidate(host: self.host)
             } catch {
                 err = error.localizedDescription
                 client.disconnect()
@@ -254,15 +353,23 @@ extension AutostartViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
         let e = entries[indexPath.row]
+        let name = labels[e.pkg] ?? e.pkg
         var cfg = cell.defaultContentConfiguration()
-        cfg.text = displayComponent(e)
-        cfg.secondaryText = e.enabled ? "已启用 · 开机会自启" : "已禁用"
+        cfg.text = name
+        cfg.secondaryText = displayComponent(e) + (e.enabled ? " · 已启用" : " · 已禁用")
         cfg.secondaryTextProperties.color = e.enabled ? .systemGreen : .secondaryLabel
-        cfg.image = UIImage(systemName: e.enabled ? "bolt.fill" : "bolt.slash")
-        cfg.imageProperties.tintColor = e.enabled ? .systemOrange : .secondaryLabel
+        let appImage: UIImage? = icons[e.pkg] ?? (AppLabelResolver.cachedIcon(pkg: e.pkg).flatMap { UIImage(data: $0) })
+        if let appImage = appImage {
+            cfg.image = appImage.withRenderingMode(.alwaysOriginal)
+            cfg.imageProperties.cornerRadius = 6
+        } else {
+            cfg.image = UIImage(systemName: e.enabled ? "bolt.fill" : "bolt.slash")
+            cfg.imageProperties.tintColor = e.enabled ? .systemOrange : .secondaryLabel
+        }
+        cfg.imageProperties.maximumSize = CGSize(width: 28, height: 28)
         cell.contentConfiguration = cfg
         cell.accessoryType = .disclosureIndicator
-        cell.accessibilityLabel = "\(displayComponent(e))，\(e.enabled ? "已启用开机自启" : "已禁用开机自启")"
+        cell.accessibilityLabel = "\(name)，\(displayComponent(e))，\(e.enabled ? "已启用开机自启" : "已禁用开机自启")"
         return cell
     }
 

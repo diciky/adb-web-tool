@@ -9,6 +9,8 @@ final class AppsViewController: UIViewController {
     private var userCount = 0
     private var systemCount = 0
     private let search = UISearchController(searchResultsController: nil)
+    /// 图标内存缓存：避免滚动/切后台回前台时反复读磁盘，解析更新时按包名移除。
+    private let imageCache = NSCache<NSString, UIImage>()
 
     private let tableView: UITableView = {
         let t = UITableView(frame: .zero)
@@ -44,6 +46,12 @@ final class AppsViewController: UIViewController {
 
     init(host: AdbHost) { self.host = host; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 从后台回前台时缓存图标可能刚补完，直接重绘当前可见行。
+        tableView.reloadData()
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -119,8 +127,8 @@ final class AppsViewController: UIViewController {
                     if pkg.isEmpty || path.isEmpty { continue }
                     sawPathedLine = true
                     let isSystem = sysPrefix.contains { path.hasPrefix($0) }
-                    let cached = AppLabelResolver.cachedLabel(pkg: pkg, apkPath: path)
-                    result.append(AppInfo(pkg: pkg, path: path, name: cached ?? pkg,
+                    let cached = AppLabelResolver.cached(pkg: pkg)
+                    result.append(AppInfo(pkg: pkg, path: path, name: cached?.label ?? pkg,
                                           versionName: "", isSystem: isSystem,
                                           isDisabled: disabled.contains(pkg)))
                 }
@@ -166,8 +174,9 @@ final class AppsViewController: UIViewController {
 
     /// 逐个解析应用名与图标，每解析一个就回主线程刷新，用户无需等全部完成。
     private func resolveAssetsIfNeeded() {
-        let pending = apps.filter { $0.name == $0.pkg || AppLabelResolver.cachedIcon(pkg: $0.pkg) == nil }
-        let targets = Array((pending.filter { !$0.isSystem } + pending.filter { $0.isSystem }).prefix(240))
+        // 已解析过的包（包括确认没有图标的包）不再重复拉 APK；缓存按包名命中。
+        let pending = apps.filter { !AppLabelResolver.isResolved(pkg: $0.pkg) }
+        let targets = Array((pending.filter { !$0.isSystem } + pending.filter { $0.isSystem }).prefix(400))
         guard !targets.isEmpty else {
             if !apps.isEmpty { statusLabel.text = "共 \(apps.count) 个应用 · 点按管理" }
             return
@@ -198,6 +207,7 @@ final class AppsViewController: UIViewController {
                             if item.pkg == app.pkg, let label = assets.label { copy.name = label }
                             return copy
                         }
+                        self.imageCache.removeObject(forKey: app.pkg as NSString)
                         self.apps = self.sortApps(self.apps)
                         self.applyFilter()
                     }
@@ -228,6 +238,14 @@ final class AppsViewController: UIViewController {
                 && (q.isEmpty || app.pkg.lowercased().contains(q) || app.name.lowercased().contains(q))
         }
         tableView.reloadData()
+    }
+
+    /// 图标读取顺序：内存 → Application Support 缓存 → 占位图。
+    private func appIcon(_ app: AppInfo) -> UIImage? {
+        if let cached = imageCache.object(forKey: app.pkg as NSString) { return cached }
+        guard let data = AppLabelResolver.cachedIcon(pkg: app.pkg), let image = UIImage(data: data) else { return nil }
+        imageCache.setObject(image, forKey: app.pkg as NSString)
+        return image
     }
 
     /// 40×40 圆角占位图：用应用名首字，不依赖颜色单独区分。
@@ -304,7 +322,7 @@ extension AppsViewController: UITableViewDataSource, UITableViewDelegate {
         cfg.text = a.name
         cfg.secondaryText = a.pkg + (a.isSystem ? "  · 系统" : "") + (a.isDisabled ? "  · 已禁用" : "")
         cfg.secondaryTextProperties.color = a.isDisabled ? .systemOrange : .secondaryLabel
-        if let data = AppLabelResolver.cachedIcon(pkg: a.pkg), let image = UIImage(data: data) {
+        if let image = appIcon(a) {
             cfg.image = image.withRenderingMode(.alwaysOriginal)
         } else {
             cfg.image = placeholderImage(a.name)

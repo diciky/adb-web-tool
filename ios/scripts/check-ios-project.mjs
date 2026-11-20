@@ -260,15 +260,18 @@ if (!screenSrc.includes('UIImageWriteToSavedPhotosAlbum')) fail('屏幕页缺少
 if (!screenSrc.includes('while live')) fail('屏幕页缺少实时刷屏循环');
 const appsSrc = readFileSync(join(swiftDir, 'AppsViewController.swift'), 'utf8');
 const resolverSrc = readFileSync(join(swiftDir, 'AppLabelResolver.swift'), 'utf8');
-for (const needle of ['用户应用', '系统应用', 'cachedIcon', 'placeholderImage', 'resolveAssetsIfNeeded']) {
+for (const needle of ['用户应用', '系统应用', 'cachedIcon', 'placeholderImage', 'resolveAssetsIfNeeded',
+                      'isResolved(pkg:', 'appIcon(']) {
   if (!appsSrc.includes(needle)) fail(`应用页缺少 ${needle}`);
 }
-for (const needle of ['iconId', 'entryName', 'findIcon', 'cacheIcon']) {
-  if (!resolverSrc.includes(needle)) fail(`应用资源解析缺少 ${needle}`);
+for (const needle of ['iconId', 'entryName', 'findIcon', 'saveIcon', 'applicationSupportDirectory',
+                      'adbweb.app.assets.v2', 'isResolved', 'cached(pkg:', 'cacheQueue']) {
+  if (!resolverSrc.includes(needle)) fail(`应用资源解析/缓存缺少 ${needle}`);
 }
 // v3.4.2：自启管理必须一次全量 dumpsys + 从 Package[...] 段取包名，禁止再切路径（路径 hash 的 == 会污染包名）
 const autoSrc = readFileSync(join(swiftDir, 'AutostartViewController.swift'), 'utf8');
-for (const needle of ['dumpsys package', 'parseAutostart', 'packageName(from:', 'BOOT_COMPLETED', 'RECEIVE_BOOT_COMPLETED']) {
+for (const needle of ['dumpsys package', 'parseAutostart', 'packageName(from:', 'BOOT_COMPLETED', 'RECEIVE_BOOT_COMPLETED',
+                      'AutostartStore', 'AppLabelResolver.assets', 'icons[e.pkg]']) {
   if (!autoSrc.includes(needle)) fail(`自启管理缺少 ${needle}`);
 }
 if (/pm list packages -f/.test(autoSrc) && !autoSrc.includes('packageName(from:')) {

@@ -7,7 +7,8 @@ import Compression
 /// - 二进制 XML 取 `<application android:label>` 与 `android:icon`；
 /// - 资源表按 zh-CN > zh > 默认 > 其他语言 解析字符串；
 /// - 图标从 `res/<type>-<density>/<name>.png|webp` 提取；
-/// - 结果本地缓存（名称 UserDefaults，图标 Caches 目录），避免重复拉包。
+/// - 结果按包名持久化到 Application Support（名称 + 图标 + APK 路径），避免重复拉包；
+/// - 兼容旧 Caches 图标与旧名称缓存的自动迁移。
 enum AppLabelResolver {
 
     // MARK: - Public
@@ -15,29 +16,50 @@ enum AppLabelResolver {
     struct AssetResult {
         let label: String?
         let iconData: Data?
+        let apkPath: String?
     }
 
-    /// 解析单个应用。返回的名称为 nil 时调用方回退包名。
+    /// 解析单个应用。缓存按包名存储，和 APK 路径解耦：
+    /// 首次解析成功后，后续进应用/自启页只读本地缓存，不再拉 APK。
     static func assets(for pkg: String, apkPath: String, client: AdbClient) -> AssetResult {
-        let labelCached = cachedLabel(pkg: pkg, apkPath: apkPath)
-        let iconCached = cachedIcon(pkg: pkg)
-        if labelCached != nil, iconCached != nil {
-            return AssetResult(label: labelCached, iconData: iconCached)
+        // 第一阶段：只读缓存，命中就完全不碰 ADB。
+        let hit: AssetResult? = cacheQueue.sync {
+            guard let cached = records[pkg], isFresh(cached) else { return nil }
+            let pathChanged = !apkPath.isEmpty && !cached.apkPath.isEmpty && cached.apkPath != apkPath
+            return pathChanged ? nil : result(from: cached, pkg: pkg)
         }
-        guard let result = resolve(pkg: pkg, apkPath: apkPath, client: client) else {
-            return AssetResult(label: labelCached, iconData: iconCached)
+        if let hit = hit { return hit }
+
+        // 第二阶段：未命中才拉 APK。应用页/自启页可能同时在后台解析，缓存写入统一进串行队列。
+        guard let resolved = resolve(pkg: pkg, apkPath: apkPath, client: client) else {
+            return cacheQueue.sync {
+                let previous = records[pkg]
+                let failed = CacheRecord(label: previous?.label,
+                                         iconFile: previous?.iconFile,
+                                         apkPath: apkPath.isEmpty ? (previous?.apkPath ?? "") : apkPath,
+                                         resolvedAt: Date().timeIntervalSince1970)
+                records[pkg] = failed
+                saveRecords()
+                return result(from: failed, pkg: pkg)
+            }
         }
-        var finalLabel = labelCached
-        if finalLabel == nil, let label = result.label {
-            finalLabel = label
-            cacheLabel(label, pkg: pkg, apkPath: apkPath)
+
+        return cacheQueue.sync {
+            let previous = records[pkg]
+            let finalLabel = previous?.label ?? resolved.label
+            let finalIconData = loadIcon(file: previous?.iconFile, pkg: pkg) ?? resolved.iconData
+            var iconFile = previous?.iconFile
+            if iconFile == nil, let data = finalIconData {
+                iconFile = saveIcon(data, pkg: pkg)
+            }
+            let record = CacheRecord(label: finalLabel,
+                                     iconFile: iconFile,
+                                     apkPath: resolved.apkPath ?? apkPath,
+                                     resolvedAt: Date().timeIntervalSince1970)
+            records[pkg] = record
+            saveRecords()
+            return AssetResult(label: finalLabel, iconData: finalIconData, apkPath: record.apkPath)
         }
-        var finalIcon = iconCached
-        if finalIcon == nil, let icon = result.iconData {
-            finalIcon = icon
-            cacheIcon(icon, pkg: pkg)
-        }
-        return AssetResult(label: finalLabel, iconData: finalIcon)
     }
 
     /// 兼容旧调用：只取名称。
@@ -45,61 +67,150 @@ enum AppLabelResolver {
         assets(for: pkg, apkPath: apkPath, client: client).label
     }
 
-    /// 只查缓存，不触发网络/IO。用于首屏立刻显示名称。
-    static func cachedLabel(pkg: String, apkPath: String) -> String? {
-        cache[cacheKey(pkg: pkg, apkPath: apkPath)]
+    /// 读取某个包的完整本地缓存；不触发网络。
+    static func cached(pkg: String) -> AssetResult? {
+        cacheQueue.sync {
+            guard let record = records[pkg] else { return nil }
+            return result(from: record, pkg: pkg)
+        }
     }
 
-    /// 只查图标缓存。
+    /// 该包是否已经尝试过解析（即使没有拿到名称/图标也算完成）。
+    static func isResolved(pkg: String) -> Bool {
+        cacheQueue.sync { (records[pkg]?.resolvedAt ?? 0) > 0 }
+    }
+
+    /// 只查缓存，不触发网络/IO。apkPath 参数保留兼容，实际按包名查找。
+    static func cachedLabel(pkg: String, apkPath: String) -> String? {
+        cacheQueue.sync {
+            if let label = records[pkg]?.label, !label.isEmpty { return label }
+            return legacyLabel(pkg: pkg)
+        }
+    }
+
+    /// 只查图标缓存；优先 Application Support，兼容迁移旧 Caches 图标。
     static func cachedIcon(pkg: String) -> Data? {
-        guard let url = iconURL(pkg: pkg) else { return nil }
-        return try? Data(contentsOf: url)
+        cacheQueue.sync {
+            if let record = records[pkg], let data = loadIcon(file: record.iconFile, pkg: pkg), !data.isEmpty {
+                return data
+            }
+            return migrateLegacyIconLocked(pkg: pkg)
+        }
     }
 
     // MARK: - Cache
 
-    private static let cacheDefaultsKey = "adbweb.app.labels.v1"
-    private static var cache: [String: String] = loadCache()
-
-    private static func cacheKey(pkg: String, apkPath: String) -> String {
-        "\(pkg)|\(apkPath)"
+    private struct CacheRecord: Codable {
+        var label: String?
+        var iconFile: String?
+        var apkPath: String
+        var resolvedAt: TimeInterval
     }
 
-    private static func loadCache() -> [String: String] {
-        UserDefaults.standard.dictionary(forKey: cacheDefaultsKey) as? [String: String] ?? [:]
+    private static let cacheDefaultsKey = "adbweb.app.assets.v2"
+    private static let legacyLabelsKey = "adbweb.app.labels.v1"
+    private static let retryInterval: TimeInterval = 24 * 60 * 60
+    private static let cacheQueue = DispatchQueue(label: "adbweb.app.assets.cache")
+
+    private static let legacyLabels: [String: String] = {
+        UserDefaults.standard.dictionary(forKey: legacyLabelsKey) as? [String: String] ?? [:]
+    }()
+    private static var records: [String: CacheRecord] = loadRecords()
+
+    private static func isFresh(_ record: CacheRecord) -> Bool {
+        if record.label != nil || record.iconFile != nil { return true }
+        return Date().timeIntervalSince1970 - record.resolvedAt < retryInterval
     }
 
-    private static func saveCache() {
-        let snapshot = cache
-        DispatchQueue.global(qos: .utility).async {
-            UserDefaults.standard.set(snapshot, forKey: cacheDefaultsKey)
+    private static func result(from record: CacheRecord, pkg: String) -> AssetResult {
+        AssetResult(label: record.label,
+                    iconData: loadIcon(file: record.iconFile, pkg: pkg),
+                    apkPath: record.apkPath)
+    }
+
+    private static func loadRecords() -> [String: CacheRecord] {
+        var result: [String: CacheRecord] = [:]
+        if let data = UserDefaults.standard.data(forKey: cacheDefaultsKey),
+           let decoded = try? JSONDecoder().decode([String: CacheRecord].self, from: data) {
+            result = decoded
         }
+        // 迁移 v1 的名称缓存：旧键是 "包名|APK路径"，这里只取包名，修掉跨页面查不到的 bug。
+        for (key, label) in legacyLabels {
+            let pkg = key.split(separator: "|", maxSplits: 1).first.map(String.init) ?? key
+            guard !pkg.isEmpty, result[pkg] == nil else { continue }
+            result[pkg] = CacheRecord(label: label, iconFile: nil, apkPath: "", resolvedAt: 0)
+        }
+        return result
     }
 
-    private static func cacheLabel(_ label: String, pkg: String, apkPath: String) {
-        cache[cacheKey(pkg: pkg, apkPath: apkPath)] = label
-        saveCache()
+    private static func saveRecords() {
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        UserDefaults.standard.set(data, forKey: cacheDefaultsKey)
     }
 
-    private static func iconDirectory() -> URL? {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-        guard let base else { return nil }
-        let dir = base.appendingPathComponent("adbweb-app-icons", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    private static func legacyLabel(pkg: String) -> String? {
+        if let exact = legacyLabels[pkg], !exact.isEmpty { return exact }
+        for (key, value) in legacyLabels where key == pkg || key.hasPrefix(pkg + "|") {
+            if !value.isEmpty { return value }
+        }
+        return nil
+    }
+
+    private static func assetsDirectory() -> URL? {
+        let fm = FileManager.default
+        guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("AdbWebCast/app-assets", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         return dir
     }
 
-    private static func iconURL(pkg: String) -> URL? {
-        guard let dir = iconDirectory() else { return nil }
-        let safe = pkg.replacingOccurrences(of: "/", with: "_")
-        return dir.appendingPathComponent("\(safe).icon")
+    private static func safeFileName(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        return String(value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
     }
 
-    private static func cacheIcon(_ data: Data, pkg: String) {
-        guard let url = iconURL(pkg: pkg) else { return }
-        try? data.write(to: url, options: .atomic)
+    private static func iconFileName(pkg: String) -> String {
+        safeFileName(pkg) + ".png"
+    }
+
+    private static func loadIcon(file: String?, pkg: String) -> Data? {
+        if let file = file, !file.isEmpty,
+           let dir = assetsDirectory(),
+           let data = try? Data(contentsOf: dir.appendingPathComponent(file)),
+           !data.isEmpty {
+            return data
+        }
+        return nil
+    }
+
+    private static func saveIcon(_ data: Data, pkg: String) -> String? {
+        guard let dir = assetsDirectory(), !data.isEmpty else { return nil }
+        let name = iconFileName(pkg: pkg)
+        do {
+            try data.write(to: dir.appendingPathComponent(name), options: .atomic)
+        } catch {
+            return nil
+        }
+        return name
+    }
+
+    private static func legacyIconURL(pkg: String) -> URL? {
+        guard let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("adbweb-app-icons", isDirectory: true)
+        return dir.appendingPathComponent(safeFileName(pkg) + ".icon")
+    }
+
+    /// 调用方必须持有 cacheQueue。
+    private static func migrateLegacyIconLocked(pkg: String) -> Data? {
+        guard let old = legacyIconURL(pkg: pkg), let data = try? Data(contentsOf: old), !data.isEmpty else { return nil }
+        if let name = saveIcon(data, pkg: pkg), var record = records[pkg] {
+            record.iconFile = name
+            records[pkg] = record
+            saveRecords()
+        }
+        return data
     }
 
     // MARK: - Resolve
@@ -145,7 +256,7 @@ enum AppLabelResolver {
             }
 
             let icon = findIcon(iconId: info.iconId, bytes: bytes, entries: entries)
-            return AssetResult(label: label, iconData: icon)
+            return AssetResult(label: label, iconData: icon, apkPath: path)
         } catch {
             AdbLog.log("解析应用资源失败 \(pkg): \(error.localizedDescription)", level: "W")
             return nil
@@ -411,7 +522,8 @@ enum AppLabelResolver {
     private static func findIcon(iconId: UInt32?, bytes: Bytes,
                                  entries: [String: ZipEntry]) -> Data? {
         var candidates: [String] = []
-        let densities = ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi", "ldpi", "anydpi", "nodpi", ""]
+        let densities = ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi", "ldpi",
+                         "anydpi", "anydpi-v26", "nodpi", ""]
 
         if let iconId = iconId,
            let name = entryName(for: iconId, in: Data(bytes.bytes)),
@@ -426,9 +538,12 @@ enum AppLabelResolver {
             }
             // 自适应图标：前景/背景单独存图，优先前景。
             for density in densities {
-                let dir = density.isEmpty ? "res/\(type)" : "res/\(type)-\(density)"
-                candidates.append("\(dir)/\(key)_foreground.png")
-                candidates.append("\(dir)/\(key)_background.png")
+                    let dir = density.isEmpty ? "res/\(type)" : "res/\(type)-\(density)"
+                    candidates.append("\(dir)/\(key)_foreground.png")
+                    candidates.append("\(dir)/\(key)_background.png")
+                    let v4Dir = density.isEmpty ? "res/\(type)" : "res/\(type)-\(density)-v4"
+                    candidates.append("\(v4Dir)/\(key).png")
+                    candidates.append("\(v4Dir)/\(key)_foreground.png")
             }
         }
         // 兜底：常见启动图标文件名。
@@ -436,7 +551,9 @@ enum AppLabelResolver {
             for type in ["mipmap", "drawable"] {
                 for density in densities {
                     let dir = density.isEmpty ? "res/\(type)" : "res/\(type)-\(density)"
+                    let v4Dir = density.isEmpty ? "res/\(type)" : "res/\(type)-\(density)-v4"
                     candidates.append("\(dir)/\(key).png")
+                    candidates.append("\(v4Dir)/\(key).png")
                 }
             }
         }
