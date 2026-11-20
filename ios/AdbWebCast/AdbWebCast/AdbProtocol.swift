@@ -590,9 +590,10 @@ final class AdbClient {
     }
 
     // MARK: sync 字节流读取（黏包/跨帧安全，对齐 adbkit 的 parser 行为）
-    // 关键修复：adbd 会把多个 DENT/DATA 包黏进一个 WRTE 帧、也会把一个包拆到多帧。
-    // 旧实现按"帧=完整包"解析，大目录（如 /sdcard）必然黏包 → 解析错位 → 死循环挂起。
-    // 现在按字节流读：先凑够 8 字节头，再按头里的长度凑够 body，与帧边界完全解耦。
+    // 关键点 1：adbd 会把多个 DENT/DATA 包黏进一个 WRTE 帧、也会把一个包拆到多帧，
+    // 必须按字节流读，与帧边界完全解耦（旧实现按"帧=完整包"解析会解析错位挂死）。
+    // 关键点 2：响应包格式不统一——DENT 无 length 字段（固定 20B 头），
+    // 其余包为 id(4)+len(4)+body，见 receiveSyncPacket 的按 id 分支解析。
     private static var syncBuffer = Data()
 
     /// 读取 n 字节 sync 流数据；对端 CLSE（EOF）返回 nil。
@@ -650,19 +651,45 @@ final class AdbClient {
     }
 
     /// 读取一个 sync 响应包，返回 (4 字节 ID, body)；EOF 返回 nil。黏包/跨帧安全。
+    /// 关键修复（2026-11-20 真机实证：Sony BRAVIA 4K UR3 / Fire TV AFTKA，均 Android 9）：
+    /// adbd 的 sync 响应里【只有 DENT 没有 length 字段】——
+    ///   DENT: id(4) + mode(4) + size(4) + mtime(4) + namelen(4) + name（固定 20B 头）
+    ///   DONE/OKAY: id(4) + 0 填充（实测 adbd 至少跟 4 字节 0，DONE 共 20B）
+    ///   FAIL/DATA: id(4) + len(4) + payload
+    /// 旧实现统一按「8 字节头」解析，把 DENT 的 mode 字段误读为 length（如 0x41f9=16889B）
+    /// → 死等不存在的数据 → 超时。这就是「VIDAA adbd 对 LIST 零响应怪癖」的真因——
+    /// 怪癖根本不存在，正确解析后两台电视 sync LIST 均 0.1s 返回。
     private func receiveSyncPacket(local: UInt32, remote: UInt32) throws -> (String, Data)? {
-        guard let header = try readSyncBytes(8, local: local, remote: remote), header.count == 8 else {
+        guard let idData = try readSyncBytes(4, local: local, remote: remote), idData.count == 4 else {
             return nil
         }
-        let id = String(data: header.prefix(4), encoding: .ascii) ?? ""
-        let len = Int(header.u32le(4))
-        guard len >= 0 else { throw AdbError.protocolError("sync 包长度异常 \(len)") }
-        let body = len > 0 ? (try readSyncBytes(len, local: local, remote: remote)) ?? Data() : Data()
-        if id == "DENT" {
+        let id = String(data: idData, encoding: .ascii) ?? ""
+        var body = Data()
+        switch id {
+        case "DENT":
+            guard let stat = try readSyncBytes(16, local: local, remote: remote), stat.count == 16 else {
+                return nil
+            }
+            body = stat
+            let nlen = Int(stat.u32le(12))
+            if nlen > 0 {
+                guard let name = try readSyncBytes(nlen, local: local, remote: remote), name.count == nlen else {
+                    return nil
+                }
+                body.append(name)
+            }
             Self.dentSeen += 1
-            if Self.dentSeen <= 3 || Self.dentSeen % 50 == 0 { AdbLog.log("sync<DENT #\(Self.dentSeen) len=\(len)") }
-        } else {
+            if Self.dentSeen <= 3 || Self.dentSeen % 50 == 0 { AdbLog.log("sync<DENT #\(Self.dentSeen) name_len=\(nlen)") }
+        case "DONE", "OKAY", "QUIT", "FAIL", "DATA":
+            guard let lenData = try readSyncBytes(4, local: local, remote: remote), lenData.count == 4 else {
+                return nil
+            }
+            let len = Int(lenData.u32le(0))
+            guard len >= 0 else { throw AdbError.protocolError("sync 包长度异常 \(len)") }
+            body = len > 0 ? (try readSyncBytes(len, local: local, remote: remote)) ?? Data() : Data()
             AdbLog.log("sync<\(id) len=\(len)")
+        default:
+            throw AdbError.protocolError("sync 未知响应包 \(id)")
         }
         return (id, body)
     }
@@ -691,7 +718,13 @@ final class AdbClient {
                 sent += chunk.count
                 progress(fileSize > 0 ? min(99, Int(Double(sent) / Double(fileSize) * 100)) : 50)
             }
-            try sendSyncFrame("DONE", body: Data(UInt32(Date().timeIntervalSince1970).leBytes), local: local, remote: remote)
+            // 关键修复（真机实证）：DONE 包的官方格式是「时间戳放在 4 字节 length 字段位、
+            // 无 body」——即单帧 payload = "DONE" + 4 字节时间戳。旧实现发 body
+            // （头 len=4 + 4 字节 body），adbd 读完头就把时间戳取走并结束发送流程，
+            // body 被当作下一个 sync 包的垃圾 id → 不回 ACK → 卡死超时。
+            var doneFrame = Data("DONE".utf8)
+            doneFrame.append(contentsOf: UInt32(Date().timeIntervalSince1970).leBytes)
+            try sendWrte(doneFrame, local: local, remote: remote)
 
             guard let (id, body) = try receiveSyncPacket(local: local, remote: remote) else {
                 throw AdbError.protocolError("sync 通道提前关闭")
@@ -700,7 +733,11 @@ final class AdbClient {
                 throw AdbError.commandFailed("推送失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
             }
             guard id == "OKAY" else { throw AdbError.protocolError("sync 返回未知包 \(id)") }
-            try sendSyncFrame("QUIT", body: Data(), local: local, remote: remote)
+            // QUIT：单帧、不等 ACK——adbd 收到 QUIT 直接关闭 sync 服务，可能不回确认，
+            // 等待只会撞上 15s 超时。失败也无关紧要（连接随 closeChannel 关闭）。
+            var quitFrame = Data("QUIT".utf8)
+            quitFrame.append(contentsOf: UInt32(0).leBytes)
+            try? socket.sendMessage(AdbMessage(command: AdbCmd.wrte, arg0: local, arg1: remote, data: quitFrame))
             progress(100)
         }
     }
@@ -732,8 +769,10 @@ final class AdbClient {
     }
 
     /// 列目录（sync LIST → DENT/DONE）。断线自动重连重试一次。
-    /// sync LIST 在部分固件（VIDAA 等）上有 adbd 怪癖：通道可开、WRTE 全部 ACK，
-    /// 但 sync 服务对 LIST 永不响应（SEND 推送却正常）。记下这些主机，后续直接走 shell。
+    /// 2026-11-20 真机实证：此前"部分固件（VIDAA 等）对 LIST 永不响应"的怪癖并不存在，
+    /// 真因是 receiveSyncPacket 把 DENT 的 mode 字段误读为 length（见该函数注释）。
+    /// 修复后 Sony BRAVIA / Fire TV 均 0.1s 返回。brokenHosts 兜底机制保留作安全网，
+    /// 仅在个别未验证固件上真出现怪癖时才会触发。
     private static var syncListBrokenHosts: Set<String> = []
 
     func listDir(_ path: String) throws -> [RemoteFile] {
