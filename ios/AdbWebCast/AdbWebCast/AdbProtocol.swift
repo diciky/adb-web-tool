@@ -620,8 +620,16 @@ final class AdbClient {
         max(1024, min(64 * 1024, Int(Self.deviceMaxData)))
     }
 
+    /// 发送一个 WRTE 数据帧，并等待设备的 OKAY 流控确认后再返回。
+    /// 关键修复：官方 adb server（remote_socket.c）转发数据时是「发一帧 → 等设备 OKAY →
+    /// 再发下一帧」。旧实现背靠背连发不等确认，属于协议违规——部分 adbd（老索尼固件等）
+    /// 会丢弃流水线里的后续帧：表现为 sync 的 LIST 发出后电视无任何响应、
+    /// push/RECV 偶发挂死。对齐官方流控后此问题根治。
     private func sendWrte(_ payload: Data, local: UInt32, remote: UInt32) throws {
         try socket.sendMessage(AdbMessage(command: AdbCmd.wrte, arg0: local, arg1: remote, data: payload))
+        // 等待本通道的 OKAY 确认（arg0=remoteId, arg1=localId）。期间到达的其它帧
+        // 由 readFrame 归入缓存池，绝不丢失。OKAY 是毫秒级响应，超时视为通道异常。
+        _ = try readFrame(local: local, remote: remote, expected: [AdbCmd.okay], timeout: 15)
     }
 
     /// 发送一个 sync 包（4 字节 ID + 4 字节小端长度 + body）。

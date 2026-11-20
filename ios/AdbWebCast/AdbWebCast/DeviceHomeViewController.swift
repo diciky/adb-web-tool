@@ -41,6 +41,6 @@ final class DeviceHomeViewController: UITabBarController {
             wrap(remote, "遥控", "gamecontroller"),
         ]
         selectedIndex = 0
-        AdbLog.log("进入设备页 \\(host.serial)（5 Tab 扁平结构）")
+        AdbLog.log("进入设备页 \(host.serial)（5 Tab 扁平结构）")
     }
 }

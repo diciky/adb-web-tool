@@ -75,6 +75,7 @@ final class AppsViewController: UIViewController {
                 let disabled = Set(disabledOut.split(separator: "\n")
                     .map { $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "package:", with: "") })
                 let sysPrefix = ["/system", "/vendor", "/product", "/odm", "/apex", "/framework", "/system_ext"]
+                var sawPathedLine = false
                 for line in allOut.split(separator: "\n") {
                     let s = line.trimmingCharacters(in: .whitespaces)
                     guard s.hasPrefix("package:") else { continue }
@@ -83,9 +84,24 @@ final class AppsViewController: UIViewController {
                     let path = String(s[s.index(s.startIndex, offsetBy: 8)..<eq])
                     let pkg = String(s[s.index(after: eq)...])
                     if pkg.isEmpty || path.isEmpty { continue }
+                    sawPathedLine = true
                     result.append(AppInfo(pkg: pkg, path: path, name: pkg,
                                           versionName: "", isSystem: sysPrefix.contains { path.hasPrefix($0) },
                                           isDisabled: disabled.contains(pkg)))
+                }
+                // 兜底：部分固件的 -f 不带 APK 路径（package:com.xxx 无 "="），
+                // 上面解析会得到 0 项。回退用纯包名格式再解析一次。
+                if !sawPathedLine {
+                    let plainOut = (try? client.shell("pm list packages", timeout: 90)) ?? ""
+                    for line in plainOut.split(separator: "\n") {
+                        let s = line.trimmingCharacters(in: .whitespaces)
+                        guard s.hasPrefix("package:") else { continue }
+                        let pkg = String(s.dropFirst(8))
+                        guard !pkg.isEmpty else { continue }
+                        result.append(AppInfo(pkg: pkg, path: "", name: pkg,
+                                              versionName: "", isSystem: false,
+                                              isDisabled: disabled.contains(pkg)))
+                    }
                 }
                 client.disconnect()
             } catch { err = error.localizedDescription; client.disconnect() }

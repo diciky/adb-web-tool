@@ -111,6 +111,7 @@ if (!proto.includes('deviceMaxData')) fail('缺少 deviceMaxData（未按电视�
 if (!/AdbCmd\.cnxn[\s\S]{0,300}deviceMaxData = min\(reply\.arg1/.test(proto)) fail('握手未从 CNXN 回复读取设备 maxdata');
 if (!proto.includes('func sendSyncFrame')) fail('缺少 sendSyncFrame（sync 包头与 body 必须分帧发送，单帧负载不得超过设备 maxdata）');
 if (!proto.includes('func sendWrte')) fail('缺少 sendWrte 分帧发送');
+if (!/sendWrte[\s\S]{0,600}AdbCmd\.okay/.test(proto)) fail('sendWrte 必须等待设备 OKAY 流控确认（官方 adb server 单帧流控，不等确认属协议违规，部分 adbd 会丢弃流水线帧）');
 if (!proto.includes('frameLimit')) fail('缺少 frameLimit（单帧上限 min(64KB, 设备 maxdata)）');
 // v2.7.0 截图修复：adbkit 同款命令（echo 探测行 + stderr 重定向）+ CRLF 自动探测。
 if (!proto.includes('echo && screencap -p 2>/dev/null')) fail('截图命令未对齐 adbkit（echo 探测行 + 2>/dev/null 防污染）');
