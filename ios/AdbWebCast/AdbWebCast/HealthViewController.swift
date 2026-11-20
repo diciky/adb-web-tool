@@ -1,6 +1,7 @@
 import UIKit
+import UserNotifications
 
-/// 健康监控页：直连电视用 ADB shell 采集 CPU / 内存 / 存储 / 电量 / WiFi，
+/// 设备健康管理页：直连电视用 ADB shell 采集 CPU / 内存 / 存储 / 电量 / WiFi，
 /// 每 2 秒采样一次，曲线保留最近 60 点；网络测速用 ping + push/pull 吞吐。
 /// 不依赖 Web 服务端，完全端上完成。
 
@@ -53,6 +54,9 @@ final class HealthViewController: UIViewController {
     private let workQueue = DispatchQueue(label: "adbweb.health.sample", qos: .utility)
     private var sampling = false
     private var testing = false
+    private var pendingRecords: [HealthRecord] = []
+    private var lastAlert: [String: Date] = [:]
+    private var lastTemp: Double?
 
     private let scroll = UIScrollView()
     private let stack: UIStackView = {
@@ -94,9 +98,12 @@ final class HealthViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "健康监控"
+        title = "设备健康管理"
         view.backgroundColor = .systemBackground
         navigationItem.largeTitleDisplayMode = .never
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "Pro", style: .plain, target: self, action: #selector(proTools)
+        )
 
         cpuChart.lineColor = .systemBlue
         memChart.lineColor = .systemGreen
@@ -146,6 +153,7 @@ final class HealthViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         sampleTimer?.invalidate(); sampleTimer = nil
+        flushHistory()
     }
     deinit { sampleTimer?.invalidate() }
 
@@ -280,6 +288,20 @@ final class HealthViewController: UIViewController {
         if let rx = s.wifiRx { bits.append("\(rx)Mbps") }
         if let rssi = s.wifiRssi { bits.append("RSSI \(rssi)") }
         infoLabel.text = bits.isEmpty ? "—" : bits.joined(separator: " · ")
+        lastTemp = s.batteryTempC
+        if PurchaseManager.shared.isPro {
+            let record = HealthRecord(
+                date: Date().timeIntervalSince1970,
+                device: host.serial,
+                cpu: s.cpu ?? 0,
+                memPercent: s.memPercent,
+                battery: s.batteryLevel,
+                temp: s.batteryTempC
+            )
+            pendingRecords.append(record)
+            if pendingRecords.count >= 10 { flushHistory() }
+            checkAlerts(s)
+        }
         if sampleTimer != nil { statusLabel.text = "每 2s 采样 · 保留 \(maxPoints) 点 · \(host.serial)" }
     }
 
@@ -327,6 +349,124 @@ final class HealthViewController: UIViewController {
                 self.testButton.isEnabled = true
             }
         }
+    }
+
+    // MARK: - Pro 功能
+    @objc private func proTools() {
+        ProGate.run(from: self) { [weak self] in
+            guard let self else { return }
+            let sheet = UIAlertController(title: "Pro 设备管理", message: nil, preferredStyle: .actionSheet)
+            sheet.addAction(UIAlertAction(title: "历史数据", style: .default) { [weak self] _ in
+                self?.openHealthHistory()
+            })
+            sheet.addAction(UIAlertAction(title: "导出 CSV 报告", style: .default) { [weak self] _ in
+                self?.exportCSV()
+            })
+            sheet.addAction(UIAlertAction(title: "阈值告警设置", style: .default) { [weak self] _ in
+                self?.setupAlerts()
+            })
+            sheet.addAction(UIAlertAction(title: "当前性能评分", style: .default) { [weak self] _ in
+                self?.showScore()
+            })
+            sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+            sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+            self.present(sheet, animated: true)
+        }
+    }
+
+    private func openHealthHistory() {
+        flushHistory()
+        navigationController?.pushViewController(HealthHistoryViewController(), animated: true)
+    }
+
+    private func exportCSV() {
+        flushHistory()
+        let records = HealthHistory.all()
+        guard !records.isEmpty else {
+            statusLabel.text = "还没有历史数据，开启 Pro 后会自动记录"
+            return
+        }
+        var lines = ["date,device,cpu_percent,mem_percent,battery_percent,temp_c"]
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        for record in records {
+            lines.append([
+                formatter.string(from: Date(timeIntervalSince1970: record.date)),
+                record.device,
+                String(format: "%.1f", record.cpu),
+                String(format: "%.1f", record.memPercent),
+                record.battery.map(String.init) ?? "",
+                record.temp.map { String(format: "%.1f", $0) } ?? "",
+            ].joined(separator: ","))
+        }
+        let av = UIActivityViewController(activityItems: [lines.joined(separator: "\n")], applicationActivities: nil)
+        present(av, animated: true)
+    }
+
+    private func setupAlerts() {
+        let thresholds = HealthHistory.thresholds()
+        let ac = UIAlertController(title: "阈值告警", message: "留空表示关闭该项。达到阈值时本地通知提醒。", preferredStyle: .alert)
+        ac.addTextField { $0.placeholder = "CPU %（如 85）"; $0.text = thresholds.cpu.map(String.init); $0.keyboardType = .decimalPad }
+        ac.addTextField { $0.placeholder = "温度 °C（如 60）"; $0.text = thresholds.temp.map(String.init); $0.keyboardType = .decimalPad }
+        ac.addTextField { $0.placeholder = "存储占用 %（如 90）"; $0.text = thresholds.storage.map(String.init); $0.keyboardType = .decimalPad }
+        ac.addAction(UIAlertAction(title: "取消", style: .cancel))
+        ac.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+            let fields = ac.textFields ?? []
+            let cpu = Double(fields[safe: 0]?.text ?? "")
+            let temp = Double(fields[safe: 1]?.text ?? "")
+            let storage = Double(fields[safe: 2]?.text ?? "")
+            HealthHistory.saveThresholds(cpu: cpu, temp: temp, storage: storage)
+            if cpu != nil || temp != nil || storage != nil {
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            }
+            self?.statusLabel.text = "告警阈值已保存"
+        })
+        present(ac, animated: true)
+    }
+
+    private func showScore() {
+        let cpu = cpuValues.last ?? 0
+        let mem = memValues.last ?? 0
+        let temp = lastTemp ?? 0
+        let score = max(0, 100 - cpu * 0.4 - mem * 0.3 - max(0, temp - 50) * 2)
+        let ac = UIAlertController(
+            title: String(format: "性能评分 %.0f / 100", score),
+            message: "依据当前 CPU \(Int(cpu))%、内存 \(Int(mem))%、温度 \(String(format: "%.1f", temp))°C 估算，仅供趋势参考。",
+            preferredStyle: .alert
+        )
+        ac.addAction(UIAlertAction(title: "知道了", style: .default))
+        present(ac, animated: true)
+    }
+
+    private func flushHistory() {
+        guard !pendingRecords.isEmpty else { return }
+        HealthHistory.append(pendingRecords)
+        pendingRecords.removeAll()
+    }
+
+    private func checkAlerts(_ sample: HealthSample) {
+        let t = HealthHistory.thresholds()
+        if let cpu = sample.cpu, let limit = t.cpu, cpu >= limit {
+            notify("CPU 占用过高", key: "cpu", body: "当前 \(Int(cpu))%，已超过 \(Int(limit))%")
+        }
+        if let temp = sample.batteryTempC, let limit = t.temp, temp >= limit {
+            notify("设备温度过高", key: "temp", body: "当前 \(String(format: "%.1f", temp))°C，已超过 \(Int(limit))°C")
+        }
+        let maxStorage = sample.storages.map { Double($0.percent) }.max() ?? 0
+        if let limit = t.storage, maxStorage >= limit {
+            notify("存储空间不足", key: "storage", body: "最高占用 \(Int(maxStorage))%，已超过 \(Int(limit))%")
+        }
+    }
+
+    private func notify(_ title: String, key: String, body: String) {
+        if let last = lastAlert[key], Date().timeIntervalSince(last) < 600 { return }
+        lastAlert[key] = Date()
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "adbweb.health.\(key)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 
     // MARK: - 解析（纯函数）
@@ -411,5 +551,121 @@ final class HealthViewController: UIViewController {
         var v = Double(n); var i = 0
         while v >= 1024 && i < units.count - 1 { v /= 1024; i += 1 }
         return String(format: "%.1f %@", v, units[i] as NSString)
+    }
+}
+
+// MARK: - Pro：设备健康历史与阈值（Application Support 无需额外目录，索引存 UserDefaults）
+private struct HealthRecord: Codable {
+    let date: TimeInterval
+    let device: String
+    let cpu: Double
+    let memPercent: Double
+    let battery: Int?
+    let temp: Double?
+}
+
+private struct HealthThresholds: Codable {
+    var cpu: Double?
+    var temp: Double?
+    var storage: Double?
+}
+
+private enum HealthHistory {
+    static let maxCount = 5000
+    private static let historyKey = "adbweb.health.history.v1"
+    private static let thresholdKey = "adbweb.health.thresholds.v1"
+
+    static func all() -> [HealthRecord] {
+        guard let data = UserDefaults.standard.data(forKey: historyKey),
+              let list = try? JSONDecoder().decode([HealthRecord].self, from: data) else { return [] }
+        return list
+    }
+
+    static func append(_ records: [HealthRecord]) {
+        guard !records.isEmpty else { return }
+        var list = all()
+        list.append(contentsOf: records)
+        persist(Array(list.suffix(maxCount)))
+    }
+
+    static func clear() { UserDefaults.standard.removeObject(forKey: historyKey) }
+
+    private static func persist(_ list: [HealthRecord]) {
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        UserDefaults.standard.set(data, forKey: historyKey)
+    }
+
+    static func thresholds() -> HealthThresholds {
+        guard let data = UserDefaults.standard.data(forKey: thresholdKey),
+              let value = try? JSONDecoder().decode(HealthThresholds.self, from: data) else {
+            return HealthThresholds()
+        }
+        return value
+    }
+
+    static func saveThresholds(cpu: Double?, temp: Double?, storage: Double?) {
+        let value = HealthThresholds(cpu: cpu, temp: temp, storage: storage)
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(data, forKey: thresholdKey)
+    }
+}
+
+private final class HealthHistoryViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+    private var records = Array(HealthHistory.all().reversed().prefix(200))
+    private let table: UITableView = {
+        let t = UITableView(frame: .zero, style: .insetGrouped)
+        t.register(UITableViewCell.self, forCellReuseIdentifier: "health")
+        t.translatesAutoresizingMaskIntoConstraints = false
+        return t
+    }()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "健康历史"
+        view.backgroundColor = .systemBackground
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "清空", style: .plain, target: self, action: #selector(clearAll)
+        )
+        table.dataSource = self
+        table.delegate = self
+        view.addSubview(table)
+        NSLayoutConstraint.activate([
+            table.topAnchor.constraint(equalTo: view.topAnchor),
+            table.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            table.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            table.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    @objc private func clearAll() {
+        let ac = UIAlertController(title: "清空历史", message: "该操作不可恢复", preferredStyle: .alert)
+        ac.addAction(UIAlertAction(title: "取消", style: .cancel))
+        ac.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
+            HealthHistory.clear()
+            self?.records.removeAll()
+            self?.table.reloadData()
+        })
+        present(ac, animated: true)
+    }
+
+    func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { records.count }
+
+    func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tv.dequeueReusableCell(withIdentifier: "health", for: indexPath)
+        let record = records[indexPath.row]
+        var cfg = cell.defaultContentConfiguration()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        cfg.text = String(format: "%@ · CPU %.0f%% · 内存 %.0f%%",
+                          formatter.string(from: Date(timeIntervalSince1970: record.date)),
+                          record.cpu, record.memPercent)
+        var detail = record.device
+        if let temp = record.temp { detail += String(format: " · %.1f°C", temp) }
+        if let battery = record.battery { detail += " · 电量 \(battery)%" }
+        cfg.secondaryText = detail
+        cfg.secondaryTextProperties.color = .secondaryLabel
+        cell.contentConfiguration = cfg
+        cell.selectionStyle = .none
+        return cell
     }
 }

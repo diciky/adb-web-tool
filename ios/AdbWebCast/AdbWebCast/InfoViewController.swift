@@ -17,8 +17,9 @@ final class InfoViewController: UIViewController {
         ("⚡", "自启管理", "查看与配置开机自启应用"),
         ("📦", "批量安装", "多 APK 批量推送到电视"),
         ("📝", "运行日志", "协议调试日志 · 可复制分享"),
-        ("📊", "健康监控", "CPU/内存曲线 · 存储 · 电量温度 · 网络测速"),
+        ("📊", "设备健康管理", "CPU/内存曲线 · 存储 · 电量温度 · 网络测速"),
         ("⏰", "定时任务", "间隔/Cron 定时执行重启、熄屏等动作"),
+        ("💎", "Pro 权益", "截图历史/OCR · 健康历史/告警 · 订阅或永久解锁"),
     ]
 
     private let tableView: UITableView = {
@@ -115,6 +116,8 @@ final class InfoViewController: UIViewController {
             navigationController?.pushViewController(HealthViewController(host: host), animated: true)
         case 8:
             navigationController?.pushViewController(ScheduleViewController(host: host), animated: true)
+        case 9:
+            presentPaywall()
         default: break
         }
     }

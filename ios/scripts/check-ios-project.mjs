@@ -40,6 +40,7 @@ const required = [
   'AdbWebCast/AdbWebCast/AppLabelResolver.swift',
   'AdbWebCast/AdbWebCast/TextInputViewController.swift',
   'AdbWebCast/AdbWebCast/HealthViewController.swift',
+  'AdbWebCast/AdbWebCast/PurchaseManager.swift',
   'AdbWebCast/AdbWebCast/ScheduleStore.swift',
   'AdbWebCast/AdbWebCast/ScheduleViewController.swift',
   'AdbWebCast/AdbWebCast/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png',
@@ -212,7 +213,7 @@ for (const f of ['AppDelegate.swift', 'AdbKeys.swift', 'AdbProtocol.swift', 'Lan
                  'UIHelpers.swift', 'DeviceHomeViewController.swift', 'InfoViewController.swift',
                  'AppsViewController.swift', 'FilesViewController.swift', 'AutostartViewController.swift',
                  'BatchViewController.swift', 'ToolsViewController.swift', 'DeviceStore.swift',
-                 'RemoteViewController.swift', 'ScreenViewController.swift', 'Info.plist']) {
+                 'RemoteViewController.swift', 'ScreenViewController.swift', 'PurchaseManager.swift', 'Info.plist']) {
   if (!pbxText.includes(f)) fail(`project.pbxproj 没有引用 ${f}`);
 }
 // 设备持久化 + 遥控独立页 + 屏幕页关键点
@@ -245,6 +246,22 @@ const healthSrc = readFileSync(join(swiftDir, 'HealthViewController.swift'), 'ut
 for (const needle of ['cat /proc/stat', 'cat /proc/meminfo', 'df -P', 'dumpsys battery', 'dumpsys wifi', 'maxPoints = 60', 'ping -c 4', 'push(localURL:', 'pull(remotePath:']) {
   if (!healthSrc.includes(needle)) fail(`HealthViewController.swift 缺少 ${needle}`);
 }
+// v3.7.0：Pro 订阅/买断（StoreKit 2）+ 设备健康管理 + 截图/健康高级功能
+const purchaseSrc = readFileSync(join(swiftDir, 'PurchaseManager.swift'), 'utf8');
+for (const needle of ['import StoreKit', 'Product.products(for:', 'Transaction.currentEntitlements',
+                      'AppStore.sync()', 'func purchase(', 'func restore()', 'presentPaywall',
+                      'pro.monthly', 'pro.yearly', 'pro.lifetime']) {
+  if (!purchaseSrc.includes(needle)) fail(`PurchaseManager.swift 缺少 ${needle}`);
+}
+if (!infoSrc.includes('设备健康管理')) fail('设备页入口未改名为「设备健康管理」');
+if (!infoSrc.includes('presentPaywall()')) fail('设备页缺少 Pro 权益入口');
+for (const needle of ['ScreenshotHistory', 'VNRecognizeTextRequest', 'AnnotationViewController', 'ProGate.run']) {
+  if (!screenSrc.includes(needle)) fail(`屏幕页 Pro 功能缺少 ${needle}`);
+}
+for (const needle of ['HealthHistory', 'UNUserNotificationCenter', 'exportCSV', 'showScore', 'ProGate.run']) {
+  if (!healthSrc.includes(needle)) fail(`设备健康管理 Pro 功能缺少 ${needle}`);
+}
+if (!pbxSrc.includes('PurchaseManager.swift in Sources')) fail('工程未编译 PurchaseManager.swift');
 const schedSrc = readFileSync(join(swiftDir, 'ScheduleStore.swift'), 'utf8');
 for (const needle of ['computeNext', 'fieldMatch', 'intervalSec', 'cron', 'func execute', 'scheduleJobsChanged', 'startTicking']) {
   if (!schedSrc.includes(needle)) fail(`ScheduleStore.swift 缺少 ${needle}`);
