@@ -377,11 +377,13 @@ enum AppLabelResolver {
         data.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
             output.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
                 guard let srcBase = src.baseAddress, let dstBase = dst.baseAddress else { return }
-                var stream = compression_stream()
-                stream.src_ptr = UnsafeMutablePointer(mutating: srcBase.assumingMemoryBound(to: UInt8.self))
-                stream.src_size = data.count
-                stream.dst_ptr = dstBase.assumingMemoryBound(to: UInt8.self)
-                stream.dst_size = expected
+                var stream = compression_stream(
+                    dst_ptr: dstBase.assumingMemoryBound(to: UInt8.self),
+                    dst_size: expected,
+                    src_ptr: srcBase.assumingMemoryBound(to: UInt8.self),
+                    src_size: data.count,
+                    state: nil
+                )
                 guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
                         != COMPRESSION_STATUS_ERROR else { return }
                 let status = compression_stream_process(&stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
