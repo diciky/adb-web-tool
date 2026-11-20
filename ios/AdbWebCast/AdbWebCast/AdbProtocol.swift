@@ -556,7 +556,7 @@ final class AdbClient {
             throw AdbError.commandFailed("推送失败：\(String(data: body, encoding: .utf8) ?? "未知错误")")
         }
         guard id == "OKAY" else { throw AdbError.protocolError("sync 返回未知包 \(id)") }
-        try sendSyncPacket("QUIT", body: Data(), local: local, remote: remote)
+        try sendSyncFrame("QUIT", body: Data(), local: local, remote: remote)
         progress(100)
     }
 
