@@ -85,7 +85,8 @@ final class AppsViewController: UIViewController {
                     let pkg = String(s[s.index(after: eq)...])
                     if pkg.isEmpty || path.isEmpty { continue }
                     sawPathedLine = true
-                    result.append(AppInfo(pkg: pkg, path: path, name: pkg,
+                    let cached = AppLabelResolver.cachedLabel(pkg: pkg, apkPath: path)
+                    result.append(AppInfo(pkg: pkg, path: path, name: cached ?? pkg,
                                           versionName: "", isSystem: sysPrefix.contains { path.hasPrefix($0) },
                                           isDisabled: disabled.contains(pkg)))
                 }
@@ -105,11 +106,61 @@ final class AppsViewController: UIViewController {
                 }
                 client.disconnect()
             } catch { err = error.localizedDescription; client.disconnect() }
+            let sorted = result.sorted { l, r in
+                if l.name != l.pkg && r.name == r.pkg { return true }
+                if l.name == l.pkg && r.name != r.pkg { return false }
+                return l.name.localizedStandardCompare(r.name) == .orderedAscending
+            }
             DispatchQueue.main.async {
-                self.apps = result.sorted { $0.pkg < $1.pkg }
+                self.apps = sorted
                 self.applyFilter()
-                self.statusLabel.text = result.isEmpty ? (err.isEmpty ? "未读取到应用" : err) : "共 \(result.count) 个应用 · 点按管理"
+                self.statusLabel.text = result.isEmpty ? (err.isEmpty ? "未读取到应用" : err) : "共 \(result.count) 个应用 · 正在解析名称…"
                 self.refresh.endRefreshing()
+                self.resolveLabelsIfNeeded()
+            }
+        }
+    }
+
+    /// 异步从 APK 解析应用显示名（优先中文）。只处理尚未缓存、且有 APK 路径的应用，
+    /// 用户应用优先，单批最多 80 个，避免大批量应用把电视/file IO 拖慢。
+    private func resolveLabelsIfNeeded() {
+        let pending = apps.filter { $0.name == $0.pkg && !$0.path.isEmpty }
+        let targets = Array((pending.filter { !$0.isSystem } + pending.filter { $0.isSystem }).prefix(80))
+        guard !targets.isEmpty else {
+            if !apps.isEmpty { statusLabel.text = "共 \(apps.count) 个应用 · 点按管理" }
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let client = AdbClient()
+            var resolved: [String: String] = [:]
+            do {
+                try client.connect(host: self.host.ip, port: self.host.port)
+                for app in targets {
+                    if let name = AppLabelResolver.label(for: app.pkg, apkPath: app.path, client: client),
+                       name != app.pkg {
+                        resolved[app.pkg] = name
+                    }
+                }
+                client.disconnect()
+            } catch {
+                client.disconnect()
+                AdbLog.log("应用名解析中断：\(error.localizedDescription)", level: "W")
+            }
+            guard !resolved.isEmpty else { return }
+            DispatchQueue.main.async {
+                self.apps = self.apps.map { app in
+                    var copy = app
+                    if let name = resolved[app.pkg] { copy.name = name }
+                    return copy
+                }.sorted { l, r in
+                    if l.name != l.pkg && r.name == r.pkg { return true }
+                    if l.name == l.pkg && r.name != r.pkg { return false }
+                    return l.name.localizedStandardCompare(r.name) == .orderedAscending
+                }
+                self.applyFilter()
+                self.statusLabel.text = "共 \(self.apps.count) 个应用 · 已解析 \(resolved.count) 个名称"
             }
         }
     }

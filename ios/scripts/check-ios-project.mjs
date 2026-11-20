@@ -37,6 +37,10 @@ const required = [
   'AdbWebCast/AdbWebCast/DeviceStore.swift',
   'AdbWebCast/AdbWebCast/RemoteViewController.swift',
   'AdbWebCast/AdbWebCast/ScreenViewController.swift',
+  'AdbWebCast/AdbWebCast/AppLabelResolver.swift',
+  'AdbWebCast/AdbWebCast/TextInputViewController.swift',
+  'AdbWebCast/AdbWebCast/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png',
+  'AdbWebCast/AdbWebCast/Assets.xcassets/AppIcon.appiconset/Contents.json',
   'AdbWebCast/AdbWebCast/Info.plist',
   'AdbWebCast/AdbWebCast/LaunchScreen.storyboard',
   'AdbWebCast/AdbWebCast.xcodeproj/project.pbxproj',
@@ -214,6 +218,8 @@ if (!listSrc.includes('DeviceStore.all()')) fail('设备列表未读取本地记
 if (!listSrc.includes('DeviceStore.remember')) fail('设备列表未持久化连接的设备');
 const homeSrc = readFileSync(join(swiftDir, 'DeviceHomeViewController.swift'), 'utf8');
 if (!homeSrc.includes('RemoteViewController')) fail('功能主页缺少独立遥控页');
+const pbxSrc = readFileSync(join(root, 'AdbWebCast/AdbWebCast.xcodeproj/project.pbxproj'), 'utf8');
+if (!pbxSrc.includes('ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon')) fail('工程未启用 AppIcon 资源目录');
 // v3.0.0：全部功能扁平化 —— 恰好 5 个 tab，工具箱/自启/批量/日志从「设备」页宫格进入，
 // 不再依赖 UIKit 自动生成的「更多」收纳页。
 const tabCount = (homeSrc.match(/wrap\(info,|wrap\(apps,|wrap\(install,|wrap\(files,|wrap\(remote,/g) || []).length;
@@ -222,10 +228,10 @@ for (const hidden of ['wrap(autostart', 'wrap(batch', 'wrap(tools']) {
   if (homeSrc.includes(hidden)) fail(`「${hidden.slice(5)}」不应再作为独立 Tab（已移入设备页宫格）`);
 }
 const infoSrc = readFileSync(join(swiftDir, 'InfoViewController.swift'), 'utf8');
-for (const needle of ['ShellViewController(host:', 'AutostartViewController(host:', 'BatchViewController(host:', 'LogViewerViewController()', 'ScreenViewController(host:', 'powerAction', 'inputTextAction', 'clipboardAction']) {
+for (const needle of ['ShellViewController(host:', 'AutostartViewController(host:', 'BatchViewController(host:', 'LogViewerViewController()', 'ScreenViewController(host:', 'powerAction', 'TextInputViewController(host:']) {
   if (!infoSrc.includes(needle)) fail(`设备页宫格缺少入口 ${needle}`);
 }
-// v3.1.0：工具箱完全平铺 —— 电源/文字/剪贴板动作内联在设备页，ShellViewController 只保留 shell
+// v3.3.0：文字输入与剪贴板合并为 TextInputViewController，ShellViewController 只保留 shell
 const toolsSrc = readFileSync(join(swiftDir, 'ToolsViewController.swift'), 'utf8');
 if (toolsSrc.includes('ScreenViewController(host:')) fail('Shell 页不应再折叠屏幕入口（已平铺到设备页）');
 if (toolsSrc.includes('screencap') && toolsSrc.includes('实时查看')) fail('Shell 页不应再折叠屏幕入口');

@@ -1,6 +1,6 @@
-# iOS 18.4+ 客户端（ipa）
+# iOS 16.0+ 客户端（ipa）
 
-把 Web 控制台装进一个 iOS 原生壳，最低支持 **iOS 18.4**，可打成 ipa 安装。
+独立原生客户端（无 WebView），最低支持 **iOS 16.0**，由 GitHub Actions 构建未签名 IPA。
 
 ## 你需要什么
 
@@ -36,6 +36,12 @@ cd ios
   不会再触发（iOS 16 上必现）。
 - `accept` 里的 `application/vnd.android.package-archive` 在 iOS 没有对应的 UTI，
   会退化成 `public.data`，才能让 `.apk` 在选择器里可选。
+
+## v3.3.0 新增
+
+- **应用中文名**：应用列表会从 APK 的 `AndroidManifest.xml` / `resources.arsc` 解析显示名，优先 `zh-CN → zh → 默认`，解析结果本地缓存；无结果时回退包名。
+- **输入文字 / 剪贴板合并**：设备页只保留一个入口。输入框支持中文/英文，自动选择「Clipper 广播 → 系统剪贴板服务 → ASCII 直输」；同时可从手机剪贴板粘贴、复制到手机、并保留最近 8 条历史。
+- **App Icon**：内置 1024×1024 图标资源（`Assets.xcassets/AppIcon.appiconset`），无需额外配置。
 
 ## 已知限制
 
