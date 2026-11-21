@@ -96,14 +96,14 @@ enum AppLabelResolver {
         }
     }
 
-    /// 清除指定包的「失败记录」（名称与图标都缺失的缓存项），让下一次解析立即重试。
-    /// 用途：下拉强制刷新。失败缓存有 24 小时重试间隔（isFresh/isResolved），
-    /// 普通刷新跳不过去，会导致自启页/应用页长时间只显示包名。
-    static func clearFailedRecords(pkgs: [String]) {
+    /// 强制刷新用：清除所有「不完整」记录（缺名字或缺图标的都清），
+    /// 包括旧版本解析 bug 时期写入的大量失败记录——否则 24h 重试间隔内
+    /// 升级新版的用户会一直看到纯包名列表。
+    static func clearIncompleteRecords(pkgs: [String]) {
         cacheQueue.sync {
             var changed = false
             for p in pkgs {
-                if let r = records[p], r.label == nil, r.iconFile == nil {
+                if let r = records[p], r.label == nil || r.iconFile == nil {
                     records.removeValue(forKey: p)
                     changed = true
                 }

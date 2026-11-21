@@ -343,7 +343,7 @@ if (!screenSrc.includes('while live')) fail('屏幕页缺少实时刷屏循环')
 const appsSrc = readFileSync(join(swiftDir, 'AppsViewController.swift'), 'utf8');
 const resolverSrc = readFileSync(join(swiftDir, 'AppLabelResolver.swift'), 'utf8');
 for (const needle of ['用户应用', '系统应用', 'cachedIcon', 'placeholderImage', 'resolveAssetsIfNeeded',
-                      'isResolved(pkg:', 'appIcon(']) {
+                      'isResolved(pkg:', 'appIcon(', 'clearIncompleteRecords', 'noIconsAtAll', 'manualRefresh']) {
   if (!appsSrc.includes(needle)) fail(`应用页缺少 ${needle}`);
 }
 for (const needle of ['iconId', 'entryName', 'findIcon', 'saveIcon', 'applicationSupportDirectory',
@@ -361,7 +361,7 @@ for (const needle of ['资源解析跳过', '资源解析失败', '资源解析�
 const autoSrc = readFileSync(join(swiftDir, 'AutostartViewController.swift'), 'utf8');
 for (const needle of ['dumpsys package', 'parseAutostart', 'packageName(from:', 'BOOT_COMPLETED', 'RECEIVE_BOOT_COMPLETED',
                       'AutostartStore', 'AppLabelResolver.assets', 'icons[g.pkg]',
-                      'AutostartAppGroup', 'AutostartComponentListViewController', 'clearFailedRecords',
+                      'AutostartAppGroup', 'AutostartComponentListViewController', 'clearIncompleteRecords',
                       'android.intent.action.BOOT_COMPLETED:', 'componentRegex', 'userPackages', 'package:/data']) {
   if (!autoSrc.includes(needle)) fail(`自启管理缺少 ${needle}`);
 }

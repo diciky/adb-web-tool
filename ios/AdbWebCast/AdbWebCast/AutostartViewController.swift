@@ -253,7 +253,7 @@ final class AutostartViewController: UIViewController {
     /// force=true（下拉强制重扫）时先清掉失败缓存，让名称/图标缺失的包立即重试。
     private func resolveAssetsIfNeeded(for pkgs: [String], force: Bool) {
         let unique = Array(Set(pkgs))
-        if force { AppLabelResolver.clearFailedRecords(pkgs: unique) }
+        if force { AppLabelResolver.clearIncompleteRecords(pkgs: unique) }
         let pending = unique.filter { !AppLabelResolver.isResolved(pkg: $0) }
         guard !pending.isEmpty else { return }
 

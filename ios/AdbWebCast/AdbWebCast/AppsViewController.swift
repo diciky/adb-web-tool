@@ -60,7 +60,7 @@ final class AppsViewController: UIViewController {
         tableView.dataSource = self
         tableView.delegate = self
         tableView.refreshControl = refresh
-        refresh.addTarget(self, action: #selector(load), for: .valueChanged)
+        refresh.addTarget(self, action: #selector(manualRefresh), for: .valueChanged)
         search.obscuresBackgroundDuringPresentation = false
         search.searchResultsUpdater = self
         navigationItem.searchController = search
@@ -103,7 +103,15 @@ final class AppsViewController: UIViewController {
         applyFilter()
     }
 
-    @objc private func load() {
+    /// 下拉刷新：强制清除旧版本遗留的失败缓存（24h 重试间隔内 isResolved 会锁住），
+    /// 否则从 v3.8.0 及更早版本升级的用户会一直看到纯包名列表。
+    @objc private func manualRefresh() {
+        load(force: true)
+    }
+
+    @objc private func load() { load(force: false) }
+
+    private func load(force: Bool) {
         statusLabel.text = "读取应用列表…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -159,6 +167,14 @@ final class AppsViewController: UIViewController {
                     ? (err.isEmpty ? "未读取到应用" : err)
                     : "共 \(result.count) 个应用 · 正在加载名称与图标…"
                 self.refresh.endRefreshing()
+                // 自动兜底：用户应用一个图标都没有（旧版失败缓存锁死/首次），强制重解析。
+                // 手动下拉也强制；正常刷新只解析缺失项。
+                let userPkgs = result.filter { !$0.isSystem }.map { $0.pkg }
+                let noIconsAtAll = !userPkgs.isEmpty
+                    && userPkgs.allSatisfy { AppLabelResolver.cachedIcon(pkg: $0) == nil }
+                if force || noIconsAtAll {
+                    AppLabelResolver.clearIncompleteRecords(pkgs: result.map { $0.pkg })
+                }
                 self.resolveAssetsIfNeeded()
             }
         }
