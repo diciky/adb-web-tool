@@ -230,10 +230,10 @@ final class AdbIdentity {
         ]
         var ref: CFTypeRef?
         let idStatus = SecItemCopyMatching(idQuery as CFDictionary, &ref)
-        guard idStatus == errSecSuccess, let id = ref as? SecIdentity else {
+        guard idStatus == errSecSuccess, let ref else {
             throw AdbIdentityError.keychain("identity: \(idStatus)")
         }
-        return id
+        return ref as SecIdentity
         #endif
     }
 
