@@ -71,21 +71,6 @@ private enum AutostartStore {
         }
     }
 
-    /// 记录本地禁用/启用覆盖（切换成功后调用）。
-    static func setDisabled(host: AdbHost, component: String, disabled: Bool) {
-        queue.sync {
-            guard let url = fileURL(host: host),
-                  let data = try? Data(contentsOf: url),
-                  var snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
-            var set = Set(snapshot.disabled ?? [])
-            if disabled { set.insert(component) } else { set.remove(component) }
-            guard let out = try? JSONEncoder().encode(
-                Snapshot(savedAt: snapshot.savedAt, entries: snapshot.entries, disabled: Array(set)))
-            else { return }
-            try? out.write(to: url, options: .atomic)
-        }
-    }
-
     static func invalidate(host: AdbHost) {
         queue.sync {
             guard let url = fileURL(host: host) else { return }
