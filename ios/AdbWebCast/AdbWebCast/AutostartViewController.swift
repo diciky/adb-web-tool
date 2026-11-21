@@ -11,6 +11,9 @@ private enum AutostartStore {
     struct Snapshot: Codable {
         let savedAt: TimeInterval
         let entries: [StoredEntry]
+        /// 本地禁用的组件列表。dumpsys 的 Resolver Table 不含已禁用组件，
+        /// 必须本地记忆才能在列表里以「已禁用」状态展示并允许重新启用。
+        let disabled: [String]?
     }
 
     static let ttl: TimeInterval = 30 * 60
@@ -26,22 +29,40 @@ private enum AutostartStore {
         return dir.appendingPathComponent("\(key).json")
     }
 
-    static func load(host: AdbHost) -> [AutostartEntry]? {
+    static func load(host: AdbHost) -> (entries: [AutostartEntry], disabled: Set<String>)? {
         queue.sync {
             guard let url = fileURL(host: host),
                   let data = try? Data(contentsOf: url),
                   let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data),
                   Date().timeIntervalSince1970 - snapshot.savedAt < ttl else { return nil }
-            return snapshot.entries.map { AutostartEntry(pkg: $0.pkg, component: $0.component, enabled: $0.enabled) }
+            return (snapshot.entries.map { AutostartEntry(pkg: $0.pkg, component: $0.component, enabled: $0.enabled) },
+                    Set(snapshot.disabled ?? []))
         }
     }
 
-    static func save(host: AdbHost, entries: [AutostartEntry]) {
+    static func save(host: AdbHost, entries: [AutostartEntry], disabled: Set<String>) {
         queue.sync {
             guard let url = fileURL(host: host) else { return }
             let stored = entries.map { StoredEntry(pkg: $0.pkg, component: $0.component, enabled: $0.enabled) }
-            guard let data = try? JSONEncoder().encode(Snapshot(savedAt: Date().timeIntervalSince1970, entries: stored)) else { return }
+            let snapshot = Snapshot(savedAt: Date().timeIntervalSince1970, entries: stored,
+                                    disabled: Array(disabled))
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
             try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// 记录本地禁用/启用覆盖（切换成功后调用）。
+    static func setDisabled(host: AdbHost, component: String, disabled: Bool) {
+        queue.sync {
+            guard let url = fileURL(host: host),
+                  let data = try? Data(contentsOf: url),
+                  var snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+            var set = Set(snapshot.disabled ?? [])
+            if disabled { set.insert(component) } else { set.remove(component) }
+            guard let out = try? JSONEncoder().encode(
+                Snapshot(savedAt: snapshot.savedAt, entries: snapshot.entries, disabled: Array(set)))
+            else { return }
+            try? out.write(to: url, options: .atomic)
         }
     }
 
@@ -51,6 +72,14 @@ private enum AutostartStore {
             try? FileManager.default.removeItem(at: url)
         }
     }
+}
+
+/// 自启条目按应用分组后的展示模型：
+/// 同一包名的多个 BOOT_COMPLETED 组件（如 Twitch 的 BootReceiver + WorkManager Receiver）
+/// 归到同一行，列表页每行显示应用图标 + 中文名。
+fileprivate struct AutostartAppGroup {
+    let pkg: String
+    let entries: [AutostartEntry]
 }
 
 /// 自启管理页：列出具备 BOOT_COMPLETED 接收器的应用，启用/禁用其开机自启组件。
@@ -63,7 +92,9 @@ private enum AutostartStore {
 final class AutostartViewController: UIViewController {
 
     private let host: AdbHost
-    private var entries: [AutostartEntry] = []
+    /// 按应用分组后的展示模型：同一应用的多个 BOOT_COMPLETED 组件归成一行，
+    /// 避免同一应用（如 Twitch/SmartTube）因注册了多个 Receiver 重复出现。
+    private var groups: [AutostartAppGroup] = []
     /// 包名 -> 显示名（中文优先），用于把 component 前面的包名替换成人看得懂的名字
     private var labels: [String: String] = [:]
     /// 包名 -> 应用图标（来自 AppLabelResolver 持久化缓存）
@@ -125,7 +156,8 @@ final class AutostartViewController: UIViewController {
     private func load(force: Bool = false) {
         // 先显示本地缓存，避免每次进页面都等一次全量 dumpsys。
         if !force, let cached = AutostartStore.load(host: host) {
-            apply(entries: cached, fromCache: true, error: "")
+            apply(entries: Self.mergingDisabled(cached.entries, disabled: cached.disabled),
+                  fromCache: true, error: "", force: false)
             return
         }
 
@@ -153,62 +185,93 @@ final class AutostartViewController: UIViewController {
                 let all = Self.parseAutostart(from: dump)
                 // 有用户包集合时只保留第三方；拿不到集合（固件不支持 -f）时降级显示全部
                 parsed = userPackages.isEmpty ? all : all.filter { userPackages.contains($0.pkg) }
-                AutostartStore.save(host: self.host, entries: parsed)
+                let disabledSet = AutostartStore.load(host: self.host)?.disabled ?? []
+                AutostartStore.save(host: self.host, entries: parsed, disabled: disabledSet)
                 client.disconnect()
             } catch {
                 err = error.localizedDescription
                 client.disconnect()
             }
             DispatchQueue.main.async {
-                self.apply(entries: parsed, fromCache: false, error: err)
+                self.apply(entries: Self.mergingDisabled(parsed, disabled: AutostartStore.load(host: self.host)?.disabled ?? []),
+                           fromCache: false, error: err, force: force)
             }
         }
     }
 
     /// 统一渲染：先灌入持久化资源缓存，再对未解析包做小批量补全。
-    private func apply(entries: [AutostartEntry], fromCache: Bool, error: String) {
-        self.entries = entries
+    private func apply(entries: [AutostartEntry], fromCache: Bool, error: String, force: Bool) {
+        // 按包名分组（保持首次出现顺序），一行一个应用
+        var order: [String] = []
+        var byPkg: [String: [AutostartEntry]] = [:]
+        for e in entries {
+            if byPkg[e.pkg] == nil { order.append(e.pkg) }
+            byPkg[e.pkg, default: []].append(e)
+        }
+        groups = order.map { AutostartAppGroup(pkg: $0, entries: byPkg[$0] ?? []) }
+
         var resolvedLabels: [String: String] = [:]
         var resolvedIcons: [String: UIImage] = [:]
-        for entry in entries {
-            guard let cached = AppLabelResolver.cached(pkg: entry.pkg) else { continue }
-            if let label = cached.label, !label.isEmpty { resolvedLabels[entry.pkg] = label }
-            if let data = cached.iconData, let image = UIImage(data: data) { resolvedIcons[entry.pkg] = image }
+        for g in groups {
+            guard let cached = AppLabelResolver.cached(pkg: g.pkg) else { continue }
+            if let label = cached.label, !label.isEmpty { resolvedLabels[g.pkg] = label }
+            if let data = cached.iconData, let image = UIImage(data: data) { resolvedIcons[g.pkg] = image }
         }
         self.labels = resolvedLabels
         self.icons = resolvedIcons
 
         if error.isEmpty {
-            if entries.isEmpty {
+            if groups.isEmpty {
                 statusLabel.text = "未发现开机自启项（该电视可能未开放第三方自启，或已全部禁用）"
             } else {
-                let suffix = fromCache ? " · 本地缓存（下拉强制重扫）" : " · 点按切换启用/禁用"
-                statusLabel.text = "发现 \(entries.count) 个自启项\(suffix)"
+                let suffix = fromCache ? " · 本地缓存（下拉强制重扫）" : " · 点按应用管理自启组件"
+                statusLabel.text = "发现 \(groups.count) 个自启应用（共 \(entries.count) 个组件）\(suffix)"
             }
         } else {
             statusLabel.text = "读取失败：\(error)（下拉重试）"
         }
         tableView.reloadData()
         refresh.endRefreshing()
-        resolveAssetsIfNeeded(for: entries)
+        resolveAssetsIfNeeded(for: groups.map { $0.pkg }, force: force)
+    }
+
+    /// dumpsys 的 Resolver Table 不包含已禁用组件；把本地记录的禁用项合并回列表，
+    /// 这样用户能在 App 里看到「已禁用」并重新启用。
+    private static func mergingDisabled(_ entries: [AutostartEntry], disabled: Set<String>) -> [AutostartEntry] {
+        guard !disabled.isEmpty else { return entries }
+        var comps = Set(entries.map { $0.component })
+        var result = entries
+        for comp in disabled where !comps.contains(comp) {
+            let pkg = String(comp.split(separator: "/", maxSplits: 1).first ?? Substring(comp))
+            result.append(AutostartEntry(pkg: pkg, component: comp, enabled: false))
+            comps.insert(comp)
+        }
+        return result
     }
 
     /// 自启页只解析自己列表里的包（通常十几个），不会扫描设备上所有应用。
-    private func resolveAssetsIfNeeded(for entries: [AutostartEntry]) {
-        let pkgs = Array(Set(entries.map { $0.pkg })).filter { !AppLabelResolver.isResolved(pkg: $0) }
-        guard !pkgs.isEmpty else { return }
+    /// force=true（下拉强制重扫）时先清掉失败缓存，让名称/图标缺失的包立即重试。
+    private func resolveAssetsIfNeeded(for pkgs: [String], force: Bool) {
+        let unique = Array(Set(pkgs))
+        if force { AppLabelResolver.clearFailedRecords(pkgs: unique) }
+        let pending = unique.filter { !AppLabelResolver.isResolved(pkg: $0) }
+        guard !pending.isEmpty else { return }
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let client = AdbClient()
-            do {
-                try client.connect(host: self.host.ip, port: self.host.port)
-            } catch {
-                AdbLog.log("自启项资源解析连接失败：\(error.localizedDescription)", level: "W")
-                return
-            }
-            for pkg in pkgs {
+            for pkg in pending {
+                // 每个包独立连接：一次 pull 超时/失败可能污染共享传输的帧流，
+                // 导致后续所有包连锁失败；断开重连保证每个包拿到干净通道。
+                let client = AdbClient()
+                do {
+                    try client.connect(host: self.host.ip, port: self.host.port)
+                } catch {
+                    AdbLog.log("自启项资源解析连接失败：\(error.localizedDescription)", level: "W")
+                    client.disconnect()
+                    return
+                }
                 let assets = AppLabelResolver.assets(for: pkg, apkPath: "", client: client)
+                client.disconnect()
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     if let label = assets.label, !label.isEmpty { self.labels[pkg] = label }
@@ -216,7 +279,6 @@ final class AutostartViewController: UIViewController {
                     self.tableView.reloadData()
                 }
             }
-            client.disconnect()
         }
     }
 
@@ -352,15 +414,7 @@ final class AutostartViewController: UIViewController {
         return pkg.contains(".") ? pkg : nil
     }
 
-    private func displayComponent(_ entry: AutostartEntry) -> String {
-        let parts = entry.component.split(separator: "/", maxSplits: 1)
-        guard parts.count == 2 else { return entry.component }
-        let owner = String(parts[0])
-        let name = labels[owner] ?? owner
-        return "\(name)/\(parts[1])"
-    }
-
-    private func toggle(_ entry: AutostartEntry) {
+    private func toggle(_ entry: AutostartEntry, completion: ((String?) -> Void)? = nil) {
         // 粗粒度组件（pkg/*）用包级开关；精确组件用组件级开关
         let comp = entry.component
         let cmd: String
@@ -378,6 +432,9 @@ final class AutostartViewController: UIViewController {
                 try client.connect(host: self.host.ip, port: self.host.port)
                 _ = try client.shell(cmd, timeout: 30)
                 client.disconnect()
+                // 本地记忆禁用/启用：禁用的组件会从 dumpsys Resolver Table 消失，
+                // 必须记忆才能在列表里以「已禁用」展示并允许重新启用。
+                AutostartStore.setDisabled(host: self.host, component: comp, disabled: entry.enabled)
                 AutostartStore.invalidate(host: self.host)
             } catch {
                 err = error.localizedDescription
@@ -386,28 +443,133 @@ final class AutostartViewController: UIViewController {
             DispatchQueue.main.async {
                 if err.isEmpty {
                     self.load()
+                    completion?(nil)
                 } else {
                     UIKitHelper.alert("失败", err, in: self)
+                    completion?(err)
                 }
             }
         }
     }
+
+    /// 组件短名："pkg/.base.BootReceiver" → "BootReceiver"，
+    /// "pkg/androidx.work...RescheduleReceiver" → "RescheduleReceiver"
+    private static func shortComponentName(_ component: String) -> String {
+        guard let slash = component.firstIndex(of: "/") else { return component }
+        let cls = String(component[component.index(after: slash)...])
+        let parts = cls.split(separator: ".")
+        return parts.last.map(String.init) ?? cls
+    }
 }
 
 extension AutostartViewController: UITableViewDataSource, UITableViewDelegate {
-    func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { entries.count }
+    func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { groups.count }
 
     func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
-        let e = entries[indexPath.row]
-        let name = labels[e.pkg] ?? e.pkg
+        let g = groups[indexPath.row]
+        let name = labels[g.pkg] ?? g.pkg
         var cfg = cell.defaultContentConfiguration()
         cfg.text = name
-        cfg.secondaryText = displayComponent(e) + (e.enabled ? " · 已启用" : " · 已禁用")
-        cfg.secondaryTextProperties.color = e.enabled ? .systemGreen : .secondaryLabel
-        let appImage: UIImage? = icons[e.pkg] ?? (AppLabelResolver.cachedIcon(pkg: e.pkg).flatMap { UIImage(data: $0) })
+        // 状态：全启用/全禁用/部分启用
+        let enabledCount = g.entries.filter { $0.enabled }.count
+        let status: String
+        let statusColor: UIColor
+        if enabledCount == g.entries.count {
+            status = "已启用"; statusColor = .systemGreen
+        } else if enabledCount == 0 {
+            status = "已禁用"; statusColor = .secondaryLabel
+        } else {
+            status = "\(enabledCount)/\(g.entries.count) 启用"; statusColor = .secondaryLabel
+        }
+        // 组件短名（最多展示 2 个）
+        let comps = g.entries.map { Self.shortComponentName($0.component) }
+        let shown = comps.prefix(2).joined(separator: "、")
+        let more = comps.count > 2 ? " 等\(comps.count)个组件" : ""
+        cfg.secondaryText = "\(shown)\(more) · \(status)"
+        cfg.secondaryTextProperties.color = statusColor
+        let appImage: UIImage? = icons[g.pkg] ?? (AppLabelResolver.cachedIcon(pkg: g.pkg).flatMap { UIImage(data: $0) })
         if let appImage = appImage {
             cfg.image = appImage.withRenderingMode(.alwaysOriginal)
+            cfg.imageProperties.cornerRadius = 6
+        } else {
+            cfg.image = UIImage(systemName: enabledCount > 0 ? "bolt.fill" : "bolt.slash")
+            cfg.imageProperties.tintColor = enabledCount > 0 ? .systemOrange : .secondaryLabel
+        }
+        cfg.imageProperties.maximumSize = CGSize(width: 28, height: 28)
+        cell.contentConfiguration = cfg
+        cell.accessoryType = .disclosureIndicator
+        cell.accessibilityLabel = "\(name)，\(g.entries.count) 个自启组件，\(status)"
+        return cell
+    }
+
+    func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tv.deselectRow(at: indexPath, animated: true)
+        let g = groups[indexPath.row]
+        let name = labels[g.pkg] ?? g.pkg
+        let icon = icons[g.pkg] ?? (AppLabelResolver.cachedIcon(pkg: g.pkg).flatMap { UIImage(data: $0) })
+        let detail = AutostartComponentListViewController(group: g, appName: name, appIcon: icon) { [weak self] entry, done in
+            self?.toggle(entry, completion: done)
+        }
+        navigationController?.pushViewController(detail, animated: true)
+    }
+}
+
+// MARK: - 单应用自启组件管理页
+
+/// 单个应用的自启组件列表：每个 BOOT_COMPLETED 接收器一行，点按切换启用/禁用。
+private final class AutostartComponentListViewController: UIViewController {
+    private let group: AutostartAppGroup
+    private let appName: String
+    private let appIcon: UIImage?
+    /// 切换回调：(entry, completion(err))，成功后 err 为 nil。
+    private let toggleHandler: (AutostartEntry, @escaping (String?) -> Void) -> Void
+
+    private let tableView: UITableView = {
+        let t = UITableView(frame: .zero)
+        t.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
+        t.translatesAutoresizingMaskIntoConstraints = false
+        return t
+    }()
+
+    init(group: AutostartAppGroup, appName: String, appIcon: UIImage?,
+         toggleHandler: @escaping (AutostartEntry, @escaping (String?) -> Void) -> Void) {
+        self.group = group
+        self.appName = appName
+        self.appIcon = appIcon
+        self.toggleHandler = toggleHandler
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = appName
+        view.backgroundColor = .systemBackground
+        tableView.dataSource = self
+        tableView.delegate = self
+        view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+}
+
+extension AutostartComponentListViewController: UITableViewDataSource, UITableViewDelegate {
+    func tableView(_ tv: UITableView, numberOfRowsInSection section: Int) -> Int { group.entries.count }
+
+    func tableView(_ tv: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tv.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
+        let e = group.entries[indexPath.row]
+        var cfg = cell.defaultContentConfiguration()
+        cfg.text = AutostartViewController.shortComponentName(e.component)
+        cfg.secondaryText = e.component + (e.enabled ? " · 已启用" : " · 已禁用")
+        cfg.secondaryTextProperties.color = e.enabled ? .systemGreen : .secondaryLabel
+        if let appIcon {
+            cfg.image = appIcon.withRenderingMode(.alwaysOriginal)
             cfg.imageProperties.cornerRadius = 6
         } else {
             cfg.image = UIImage(systemName: e.enabled ? "bolt.fill" : "bolt.slash")
@@ -415,16 +577,21 @@ extension AutostartViewController: UITableViewDataSource, UITableViewDelegate {
         }
         cfg.imageProperties.maximumSize = CGSize(width: 28, height: 28)
         cell.contentConfiguration = cfg
-        cell.accessoryType = .disclosureIndicator
-        cell.accessibilityLabel = "\(name)，\(displayComponent(e))，\(e.enabled ? "已启用开机自启" : "已禁用开机自启")"
+        cell.accessibilityLabel = "\(e.component)，\(e.enabled ? "已启用" : "已禁用")，点按切换"
         return cell
     }
 
     func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
         tv.deselectRow(at: indexPath, animated: true)
-        let e = entries[indexPath.row]
-        UIKitHelper.confirm(e.enabled ? "禁用自启" : "启用自启", displayComponent(e), in: self, destructive: e.enabled) {
-            self.toggle(e)
+        let e = group.entries[indexPath.row]
+        UIKitHelper.confirm(e.enabled ? "禁用自启" : "启用自启",
+                            "\(appName)\n\(e.component)", in: self, destructive: e.enabled) { [weak self] in
+            guard let self else { return }
+            self.toggleHandler(e) { [weak self] err in
+                guard let self, err == nil else { return }
+                // 切换成功：禁用的组件会从扫描结果消失/启用的会重新出现，返回上级页看最新状态
+                self.navigationController?.popViewController(animated: true)
+            }
         }
     }
 }

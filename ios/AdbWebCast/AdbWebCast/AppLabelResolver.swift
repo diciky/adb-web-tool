@@ -96,6 +96,22 @@ enum AppLabelResolver {
         }
     }
 
+    /// 清除指定包的「失败记录」（名称与图标都缺失的缓存项），让下一次解析立即重试。
+    /// 用途：下拉强制刷新。失败缓存有 24 小时重试间隔（isFresh/isResolved），
+    /// 普通刷新跳不过去，会导致自启页/应用页长时间只显示包名。
+    static func clearFailedRecords(pkgs: [String]) {
+        cacheQueue.sync {
+            var changed = false
+            for p in pkgs {
+                if let r = records[p], r.label == nil, r.iconFile == nil {
+                    records.removeValue(forKey: p)
+                    changed = true
+                }
+            }
+            if changed { saveRecords() }
+        }
+    }
+
     /// 只查缓存，不触发网络/IO。apkPath 参数保留兼容，实际按包名查找。
     static func cachedLabel(pkg: String, apkPath: String) -> String? {
         cacheQueue.sync {
@@ -550,14 +566,153 @@ enum AppLabelResolver {
 
     // MARK: - Icon
 
+    /// 从 resources.arsc 直接取资源条目的 value 字符串。
+    /// mipmap/drawable 类型的 entry value 就是文件路径（如 "res/mipmap-xxxhdpi/ic_launcher.png"），
+    /// 资源混淆包的路径 value 会随文件名同步重写，因此混淆包也能直查。
+    private static func entryValueString(for id: UInt32, in arsc: Data) -> String? {
+        let b = Bytes(arsc)
+        guard b.has(0, 8), b.u16(0) == 0x0002 else { return nil }
+        let tableSize = min(b.count, Int(b.u32(4)))
+        var offset = Int(b.u16(2))
+        var globalPool: StringPool?
+        while b.has(offset, 8), offset + 8 <= tableSize {
+            let type = b.u16(offset)
+            let headerSize = Int(b.u16(offset + 2))
+            let chunkSize = Int(b.u32(offset + 4))
+            guard chunkSize >= 8, offset + chunkSize <= tableSize else { break }
+            if type == 0x0001, globalPool == nil {
+                globalPool = StringPool(b, offset: offset, chunkSize: chunkSize)
+            } else if type == 0x0200 {
+                if let value = valueStringInPackage(id, b: b, packageOffset: offset,
+                                                    chunkSize: chunkSize,
+                                                    headerSize: headerSize, globalPool: globalPool) {
+                    return value
+                }
+            }
+            offset += chunkSize
+        }
+        return nil
+    }
+
+    /// 在 package chunk 内查找指定资源的 STRING value（任一 config 块，路径字符串各 config 相同）。
+    private static func valueStringInPackage(_ id: UInt32, b: Bytes, packageOffset: Int,
+                                             chunkSize: Int, headerSize: Int,
+                                             globalPool: StringPool?) -> String? {
+        guard b.has(packageOffset + 288, 4) else { return nil }
+        let packageId = b.u32(packageOffset + 8)
+        guard packageId == (id >> 24) else { return nil }
+
+        let packageEnd = packageOffset + chunkSize
+        var offset = packageOffset + max(headerSize, 288)
+        let targetType = (id >> 16) & 0xFF
+        let targetEntry = Int(id & 0xFFFF)
+
+        while b.has(offset, 8), offset + 8 <= packageEnd {
+            let type = b.u16(offset)
+            let typeHeaderSize = Int(b.u16(offset + 2))
+            let size = Int(b.u32(offset + 4))
+            guard size >= 8, offset + size <= packageEnd else { break }
+
+            if type == 0x0201, Int(b.u8(offset + 8)) == Int(targetType) {
+                let entryCount = Int(b.u32(offset + 12))
+                let entriesStart = Int(b.u32(offset + 16))
+                if targetEntry < entryCount {
+                    let table = offset + typeHeaderSize
+                    if b.has(table + targetEntry * 4, 4) {
+                        let entryOffset = Int(b.u32(table + targetEntry * 4))
+                        if entryOffset != 0xFFFFFFFF {
+                            let entryPos = offset + entriesStart + entryOffset
+                            // ResTable_entry：size(2) flags(2) key(4)，value 在 entrySize 偏移处
+                            let entrySize = Int(b.u16(entryPos))
+                            let valuePos = entryPos + entrySize
+                            if b.has(valuePos + 8, 1) {
+                                let dataType = b.u8(valuePos + 3)
+                                let data = b.u32(valuePos + 4)
+                                if dataType == 0x03, let pool = globalPool,
+                                   pool.strings.indices.contains(Int(data)) {
+                                    return pool.strings[Int(data)]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            offset += size
+        }
+        return nil
+    }
+
+    /// 在 binary XML（自适应图标 descriptor）里找 drawable 引用（@mipmap/@drawable 的资源 id）。
+    private static func adaptiveIconReference(in xml: Data) -> UInt32? {
+        let b = Bytes(xml)
+        guard b.has(0, 8), b.u16(0) == 0x0003 else { return nil }
+        var pool: StringPool?
+        var offset = Int(b.u16(2))
+        let total = min(b.count, Int(b.u32(4)))
+        while b.has(offset, 8), offset + 8 <= total {
+            let type = b.u16(offset)
+            let headerSize = Int(b.u16(offset + 2))
+            let chunkSize = Int(b.u32(offset + 4))
+            guard chunkSize >= 8, offset + chunkSize <= total else { break }
+            if type == 0x0001, pool == nil {
+                pool = StringPool(b, offset: offset, chunkSize: chunkSize)
+            } else if type == 0x0102, let pool = pool {
+                let attrStart = Int(b.u16(offset + 24))
+                let attrSize = Int(b.u16(offset + 26))
+                let attrCount = Int(b.u16(offset + 28))
+                guard attrSize >= 20 else { break }
+                var p = offset + headerSize + attrStart
+                for _ in 0..<attrCount {
+                    guard b.has(p, 20) else { break }
+                    let nameIndex = Int(b.u32(p + 4))
+                    let dataType = b.u8(p + 15)
+                    let data = b.u32(p + 16)
+                    let attrName = pool.strings.indices.contains(nameIndex) ? pool.strings[nameIndex] : ""
+                    if dataType == 0x01, data != 0xFFFFFFFF,
+                       attrName == "drawable" || attrName == "foreground" || attrName == "background" {
+                        return data
+                    }
+                    p += attrSize
+                }
+            }
+            offset += chunkSize
+        }
+        return nil
+    }
+
     private static func findIcon(iconId: UInt32?, bytes: Bytes,
                                  entries: [String: ZipEntry]) -> Data? {
+        // 提取 resources.arsc：所有资源表反查（entryName/entryValueString）都必须传 arsc 数据，
+        // 传整个 APK 字节会因首字节不是 RES_TABLE_TYPE(0x0002) 而恒返回 nil。
+        let arscData = extract("resources.arsc", from: bytes, entries: entries)
+        // 最优先：iconId → resources.arsc entry value 直接给出资源文件路径。
+        // 资源混淆包（AndResGuard 等）改写实际文件名后，arsc 里的路径 value 会被同步重写，
+        // 因此这是拿到真实图标文件（含混淆名）的最可靠途径，对静态图标 100% 命中。
+        if let iconId = iconId, let arscData = arscData {
+            if let valuePath = entryValueString(for: iconId, in: arscData) {
+                let lower = valuePath.lowercased()
+                if lower.hasSuffix(".png") || lower.hasSuffix(".webp") || lower.hasSuffix(".jpg") {
+                    if let d = extract(valuePath, from: bytes, entries: entries), d.count > 64 {
+                        return d
+                    }
+                } else if lower.hasSuffix(".xml") {
+                    // 自适应图标 descriptor：解析 xml 里的 drawable 引用，再取引用资源的文件路径
+                    if let xml = extract(valuePath, from: bytes, entries: entries),
+                       let ref = adaptiveIconReference(in: xml),
+                       let inner = entryValueString(for: ref, in: arscData),
+                       let d = extract(inner, from: bytes, entries: entries), d.count > 64 {
+                        return d
+                    }
+                }
+            }
+        }
+
         var candidates: [String] = []
         let densities = ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi", "ldpi",
                          "anydpi", "anydpi-v26", "nodpi", ""]
 
-        if let iconId = iconId,
-           let name = entryName(for: iconId, in: Data(bytes.bytes)),
+        if let iconId = iconId, let arsc = arscData,
+           let name = entryName(for: iconId, in: arsc),
            let slash = name.firstIndex(of: "/") {
             let type = String(name[..<slash])
             let key = String(name[name.index(after: slash)...])
@@ -595,8 +750,8 @@ enum AppLabelResolver {
         }
         // 二次兜底：固件常见 res/drawable-xhdpi-v4/ic_launcher.png 这类带版本后缀的目录，
         // 以及自适应图标 ic_launcher_foreground.png。按条目名模糊匹配。
-        if let iconId = iconId,
-           let name = entryName(for: iconId, in: Data(bytes.bytes)),
+        if let iconId = iconId, let arsc = arscData,
+           let name = entryName(for: iconId, in: arsc),
            let slash = name.firstIndex(of: "/") {
             let type = String(name[..<slash])
             let key = String(name[name.index(after: slash)...])
@@ -645,6 +800,81 @@ enum AppLabelResolver {
         }
         if let best = best, let data = extract(best.name, from: bytes, entries: entries), data.count > 64 {
             return data
+        }
+
+        // 四次兕底（资源混淆包）：AndResGuard 等工具把 res 文件名混淆成 res/-A.png / res/m7.png，
+        // 目录不再是 mipmap-/drawable-，以上全部落空（实测 SmartTube/TiviMate）。
+        // 此时解出包内所有 res 图片的实际像素尺寸，优先选接近方形的最大图（启动图标特征），
+        // 没有方形再退而取最大的图（banner/大图也能展示）。
+        struct DimCandidate { let name: String; let width: Int; let height: Int; let byteSize: Int }
+        var squareBest: DimCandidate?
+        var anyBest: DimCandidate?
+        for (name, entry) in entries {
+            guard name.hasPrefix("res/") else { continue }
+            let lower = name.lowercased()
+            guard lower.hasSuffix(".png") || lower.hasSuffix(".webp") else { continue }
+            guard !lower.hasSuffix(".9.png") else { continue }
+            // 启动图标通常 1KB~1MB；太小的多为装饰小图
+            guard entry.uncompressedSize >= 1024, entry.uncompressedSize <= 1_048_576 else { continue }
+            guard let px = extract(name, from: bytes, entries: entries),
+                  let dims = imageSize(px) else { continue }
+            guard dims.width >= 48, dims.height >= 48 else { continue }
+            let cand = DimCandidate(name: name, width: dims.width, height: dims.height,
+                                    byteSize: entry.uncompressedSize)
+            let square = abs(dims.width - dims.height) * 5 <= max(dims.width, dims.height)  // 长宽比 ≤ 1.2
+            if square {
+                if let cur = squareBest {
+                    if max(dims.width, dims.height) > max(cur.width, cur.height) { squareBest = cand }
+                } else { squareBest = cand }
+            }
+            if let cur = anyBest {
+                if cand.byteSize > cur.byteSize { anyBest = cand }
+            } else { anyBest = cand }
+        }
+        if let best = squareBest ?? anyBest,
+           let picked = extract(best.name, from: bytes, entries: entries), picked.count > 64 {
+            AdbLog.log("图标混淆兕底命中：\(best.name) \(best.width)x\(best.height)")
+            return picked
+        }
+        return nil
+    }
+
+    /// 从 PNG/WebP 原始字节解析像素尺寸（资源混淆包兕底时用于挑启动图标）。
+    private static func imageSize(_ data: Data) -> (width: Int, height: Int)? {
+        let b = [UInt8](data)
+        guard b.count >= 30 else { return nil }
+        // PNG：8 字节签名 + IHDR，宽高在 16..24（大端）
+        if b[0] == 0x89, b[1] == 0x50, b[2] == 0x4E, b[3] == 0x47 {
+            let w = (Int(b[16]) << 24) | (Int(b[17]) << 16) | (Int(b[18]) << 8) | Int(b[19])
+            let h = (Int(b[20]) << 24) | (Int(b[21]) << 16) | (Int(b[22]) << 8) | Int(b[23])
+            if w > 0, h > 0, w <= 8192, h <= 8192 { return (w, h) }
+            return nil
+        }
+        // WebP：RIFF....WEBP
+        if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46,
+           b[8] == 0x57, b[9] == 0x45, b[10] == 0x42, b[11] == 0x50 {
+            if b[12] == 0x56, b[13] == 0x50, b[14] == 0x38, b[15] == 0x58 {
+                // VP8X（extended）：canvas 尺寸 24bit LE（值-1）在 24..30
+                let w = 1 + (Int(b[24]) | (Int(b[25]) << 8) | (Int(b[26]) << 16))
+                let h = 1 + (Int(b[27]) | (Int(b[28]) << 8) | (Int(b[29]) << 16))
+                if w > 0, h > 0, w <= 8192, h <= 8192 { return (w, h) }
+                return nil
+            }
+            if b[12] == 0x56, b[13] == 0x50, b[14] == 0x38, b[15] == 0x20 {
+                // VP8（lossy）：20 字节头 + frame tag(3) + start code(3)，宽高 14bit LE 在 26..30
+                let w = Int(b[26]) | ((Int(b[27]) & 0x0F) << 8)
+                let h = Int(b[28]) | ((Int(b[29]) & 0x0F) << 8)
+                if w > 0, h > 0, w <= 8192, h <= 8192 { return (w, h) }
+                return nil
+            }
+            if b[12] == 0x56, b[13] == 0x50, b[14] == 0x38, b[15] == 0x4C, b[20] == 0x2F {
+                // VP8L（lossless）：signature 0x2F 后 14bit 宽-1、14bit 高-1（LSB first）
+                let bits = UInt32(b[21]) | (UInt32(b[22]) << 8) | (UInt32(b[23]) << 16) | (UInt32(b[24]) << 24)
+                let w = Int(bits & 0x3FFF) + 1
+                let h = Int((bits >> 14) & 0x3FFF) + 1
+                if w > 0, h > 0, w <= 8192, h <= 8192 { return (w, h) }
+                return nil
+            }
         }
         return nil
     }
@@ -752,7 +982,7 @@ enum AppLabelResolver {
     private static func inflate(_ data: Data, expected: Int) -> Data? {
         guard expected > 0, !data.isEmpty else { return nil }
         var output = [UInt8](repeating: 0, count: expected)
-        var produced = 0
+        var producedOut = 0
         var succeeded = false
 
         data.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
@@ -767,14 +997,29 @@ enum AppLabelResolver {
                 )
                 guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)
                         != COMPRESSION_STATUS_ERROR else { return }
-                let status = compression_stream_process(&stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
-                produced = expected - stream.dst_size
-                succeeded = (status == COMPRESSION_STATUS_END || status == COMPRESSION_STATUS_OK) && produced > 0
-                compression_stream_destroy(&stream)
+                defer { compression_stream_destroy(&stream) }
+                // 关键：compression_stream_init 会重置流字段，src/dst 必须在 init 之后再设置。
+                // 先填字段再 init 会导致解压恒失败（应用名/图标/manifest 全部解不出的根因）。
+                stream.src_ptr = srcBase.assumingMemoryBound(to: UInt8.self)
+                stream.src_size = data.count
+                stream.dst_ptr = dstBase.assumingMemoryBound(to: UInt8.self)
+                stream.dst_size = expected
+                let flags = Int32(COMPRESSION_STREAM_FINALIZE.rawValue)
+                var status = compression_stream_process(&stream, flags)
+                var produced = expected - stream.dst_size
+                // 大数据需要多轮 process（包括输入耗尽后的 flush 轮，FINALIZE 要再调一次
+                // 才返回 END），直到 END 或输出写满；dst 写满后继续调用会 ERROR 自动退出
+                while status == COMPRESSION_STATUS_OK && produced < expected {
+                    status = compression_stream_process(&stream, flags)
+                    produced = expected - stream.dst_size
+                }
+                producedOut = produced
+                succeeded = produced > 0 &&
+                    (status == COMPRESSION_STATUS_END || produced >= expected)
             }
         }
         guard succeeded else { return nil }
-        return Data(output[0..<produced])
+        return Data(output[0..<producedOut])
     }
 
     // MARK: - Byte helper

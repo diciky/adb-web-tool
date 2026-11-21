@@ -360,9 +360,17 @@ for (const needle of ['资源解析跳过', '资源解析失败', '资源解析�
 //         并用 pm list packages -f 仅取 /data 用户包做过滤（不是切包名，另有 packageName(from:) fallback）。
 const autoSrc = readFileSync(join(swiftDir, 'AutostartViewController.swift'), 'utf8');
 for (const needle of ['dumpsys package', 'parseAutostart', 'packageName(from:', 'BOOT_COMPLETED', 'RECEIVE_BOOT_COMPLETED',
-                      'AutostartStore', 'AppLabelResolver.assets', 'icons[e.pkg]',
+                      'AutostartStore', 'AppLabelResolver.assets', 'icons[g.pkg]',
+                      'AutostartAppGroup', 'AutostartComponentListViewController', 'clearFailedRecords',
                       'android.intent.action.BOOT_COMPLETED:', 'componentRegex', 'userPackages', 'package:/data']) {
   if (!autoSrc.includes(needle)) fail(`自启管理缺少 ${needle}`);
+}
+// v3.8.1：资源解析关键修复必须有守护断言（inflate 的 init 顺序 bug、arsc 直查混淆路径）
+const resolverSrc8 = readFileSync(join(swiftDir, 'AppLabelResolver.swift'), 'utf8');
+for (const needle of ['compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB)',
+                      'src/dst 必须在 init 之后再设置', 'entryValueString', 'extract("resources.arsc"',
+                      'imageSize', 'while status == COMPRESSION_STATUS_OK && produced < expected']) {
+  if (!resolverSrc8.includes(needle)) fail(`AppLabelResolver 缺少 ${needle}`);
 }
 if (/pm list packages -f/.test(autoSrc) && !autoSrc.includes('packageName(from:')) {
   fail('自启管理仍在从 pm list packages -f 路径切包名（== 污染风险）');
