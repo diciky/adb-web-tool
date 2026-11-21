@@ -52,12 +52,7 @@ final class AdbTLSTransport: AdbTransport {
 
         let params = NWParameters(tls: tlsOptions)
         params.allowLocalEndpointReuse = true
-        #if canImport(UIKit)
-        params.connectTimeout = max(3, Int(timeout))
-        #else
-        // macOS 无 connectTimeout；本地 e2e 测试用，读超时兜底
-        _ = timeout
-        #endif
+        // 连接超时由下方 sem.wait(timeout:) 兜底（NWParameters 无 connectTimeout）
 
         guard let ep = NWEndpoint.Port(rawValue: port) else {
             throw AdbError.connectionFailed("端口无效：\(port)")

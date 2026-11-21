@@ -108,6 +108,10 @@ protocol AdbTransport: AnyObject {
 }
 
 extension AdbTransport {
+    /// 默认超时的 connect 快捷方式（Swift protocol 不支持默认参数）
+    func connect(host: String, port: UInt16) throws {
+        try connect(host: host, port: port, timeout: 6)
+    }
     func sendMessage(_ msg: AdbMessage) throws { try writeAll(msg.encoded) }
     func receiveMessage() throws -> AdbMessage {
         let h = try receiveExact(24)
@@ -327,7 +331,7 @@ final class AdbClient {
         // 设备变更或旧连接已断 → 重建连接并握手
         Self.sharedTransport.closeSocket()
         if Self.usingTLS != tls {
-            Self.sharedTransport = makeTransport(tls: tls)
+            Self.sharedTransport = Self.makeTransport(tls: tls)
             Self.usingTLS = tls
         }
         Self.packetStore.removeAll()   // 新连接，丢弃旧通道的残留帧
@@ -433,7 +437,7 @@ final class AdbClient {
         guard let h = Self.lastHost else { throw AdbError.connectionFailed("无可用连接") }
         Self.sharedTransport.closeSocket()
         if Self.usingTLS != Self.lastTLS {
-            Self.sharedTransport = makeTransport(tls: Self.lastTLS)
+            Self.sharedTransport = Self.makeTransport(tls: Self.lastTLS)
             Self.usingTLS = Self.lastTLS
         }
         Self.packetStore.removeAll()

@@ -214,12 +214,27 @@ final class AdbIdentity {
             throw AdbIdentityError.keychain("key: \(keyStatus)")
         }
 
+        // SecIdentity 构建：macOS 用 SecIdentityCreateWithCertificate；
+        // iOS 无此 API，标准做法是从钥匙串按 kSecClassIdentity 查询（证书+私钥须同名关联）
+        #if os(macOS)
         var identity: SecIdentity?
         let status = SecIdentityCreateWithCertificate(nil, cert, &identity)
         guard status == errSecSuccess, let id = identity else {
             throw AdbIdentityError.keychain("identity: \(status)")
         }
         return id
+        #else
+        let idQuery: [String: Any] = [
+            kSecClass as String: kSecClassIdentity,
+            kSecAttrLabel as String: label,
+        ]
+        var ref: CFTypeRef?
+        let idStatus = SecItemCopyMatching(idQuery as CFDictionary, &ref)
+        guard idStatus == errSecSuccess, let id = ref as? SecIdentity else {
+            throw AdbIdentityError.keychain("identity: \(idStatus)")
+        }
+        return id
+        #endif
     }
 
     // MARK: - 配对 PeerInfo 里上交的公钥串（与 AUTH 公钥同源）

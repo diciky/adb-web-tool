@@ -278,12 +278,13 @@ final class DeviceListViewController: UIViewController {
             }
         }
         browser.start()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak hud] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self, weak hud] in
             if !done {
                 done = true
                 browser.stop()
                 hud?.dismiss(animated: true) {
-                    if let self { UIKitHelper.alert("未找到配对设备", "请确认电视的配对弹窗正在显示，再重试。", in: self) }
+                    guard let self else { return }
+                    UIKitHelper.alert("未找到配对设备", "请确认电视的配对弹窗正在显示，再重试。", in: self)
                 }
             }
         }
@@ -307,6 +308,7 @@ final class DeviceListViewController: UIViewController {
             } catch {
                 DispatchQueue.main.async {
                     hud.dismiss(animated: true) {
+                        guard let self else { return }
                         UIKitHelper.alert("配对失败", error.localizedDescription + "\n\n常见原因：配对码输错、配对弹窗已关闭、端口填错（要用配对弹窗里的端口，不是 5555）。", in: self)
                     }
                 }
@@ -329,15 +331,14 @@ final class DeviceListViewController: UIViewController {
             }
         }
         browser.start()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak hud] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self, weak hud] in
             if !done {
                 done = true
                 browser.stop()
                 hud?.dismiss(animated: true) {
-                    if let self {
-                        UIKitHelper.alert("配对成功，但未找到无线调试端口",
-                            "请回到首页重新扫描（自动扫描本机网段），新发现的无线调试设备可直接连接。", in: self)
-                    }
+                    guard let self else { return }
+                    UIKitHelper.alert("配对成功，但未找到无线调试端口",
+                        "请回到首页重新扫描（自动扫描本机网段），新发现的无线调试设备可直接连接。", in: self)
                 }
             }
         }
