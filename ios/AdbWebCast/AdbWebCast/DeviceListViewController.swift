@@ -15,7 +15,7 @@ final class DeviceListViewController: UIViewController {
     }()
     private let subtitleLabel: UILabel = {
         let l = UILabel(); l.font = .systemFont(ofSize: 13); l.textColor = .secondaryLabel
-        l.numberOfLines = 0; l.text = "连过一次即永久记住 · 自动扫描 / 手动网段 / IP 直连"; return l
+        l.numberOfLines = 0; l.text = "连过一次即永久记住 · 自动扫描 / 手动网段 / IP 直连 / 配对码"; return l
     }()
     private let netLabel: UILabel = {
         let l = UILabel(); l.font = .systemFont(ofSize: 12); l.textColor = .secondaryLabel
@@ -24,6 +24,7 @@ final class DeviceListViewController: UIViewController {
     private let autoButton: UIButton = DeviceListViewController.makeButton("自动扫描本机网段", .systemBlue)
     private let manualButton: UIButton = DeviceListViewController.makeButton("手动输入网段", .systemTeal)
     private let directButton: UIButton = DeviceListViewController.makeButton("输入电视 IP 直连", .systemPurple)
+    private let pairButton: UIButton = DeviceListViewController.makeButton("无线调试配对（配对码）", .systemOrange)
 
     private lazy var tableView: UITableView = {
         let t = UITableView(frame: .zero, style: .insetGrouped)
@@ -64,7 +65,7 @@ final class DeviceListViewController: UIViewController {
     }
 
     private func buildUI() {
-        let header = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel, netLabel, autoButton, manualButton, directButton])
+        let header = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel, netLabel, autoButton, manualButton, directButton, pairButton])
         header.axis = .vertical; header.spacing = 8; header.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(header); view.addSubview(tableView)
         tableView.refreshControl = refresh
@@ -72,6 +73,7 @@ final class DeviceListViewController: UIViewController {
         autoButton.addTarget(self, action: #selector(autoScan), for: .touchUpInside)
         manualButton.addTarget(self, action: #selector(manualSubnet), for: .touchUpInside)
         directButton.addTarget(self, action: #selector(directIP), for: .touchUpInside)
+        pairButton.addTarget(self, action: #selector(pairingCode), for: .touchUpInside)
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
@@ -120,22 +122,34 @@ final class DeviceListViewController: UIViewController {
     }
 
     @objc private func directIP() {
-        UIKitHelper.input("输入电视 IP（可带端口）", placeholder: "例如 10.10.10.121 或 10.10.10.28:5556", in: self) { [weak self] text in
-            guard let self else { return }
-            let raw = text.trimmingCharacters(in: .whitespaces)
-            let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
-            let ip = parts.first ?? raw
+        let ac = UIAlertController(title: "输入电视 IP 直连",
+            message: "端口留空则自动尝试常见端口（5555 / 5554 / 5556-5560 / 5114 / 5037 / 62001）；\nAndroid 11+ 无线调试端口是随机的，请用配对功能或 mDNS 扫描。",
+            preferredStyle: .alert)
+        ac.addTextField { $0.placeholder = "电视 IP（如 10.10.10.121）"; $0.keyboardType = .decimalPad }
+        ac.addTextField { $0.placeholder = "端口（可留空）"; $0.keyboardType = .numberPad }
+        ac.addAction(UIAlertAction(title: "连接", style: .default) { [weak self, weak ac] _ in
+            guard let self, let ac else { return }
+            let ip = (ac.textFields?[0].text ?? "").trimmingCharacters(in: .whitespaces)
+            var portText = (ac.textFields?[1].text ?? "").trimmingCharacters(in: .whitespaces)
+            // 兼容在 IP 框里直接填 IP:端口 的一体格式
+            if let colon = ip.firstIndex(of: ":") {
+                portText = String(ip[ip.index(after: colon)...])
+                let hostPart = String(ip[ip.startIndex..<colon])
+                guard LanScanner.validIPv4(hostPart) else {
+                    UIKitHelper.alert("IP 格式不对", "请输入形如 10.10.10.121 的 IPv4 地址。", in: self); return
+                }
+                let ports: [UInt16] = (UInt16(portText).flatMap { $0 > 0 ? $0 : nil }).map { [$0] } ?? AdbScanPorts.extended
+                self.startScan(bases: [], singleIPs: [hostPart], ports: ports, label: "直连 \(ip)")
+                return
+            }
             guard LanScanner.validIPv4(ip) else {
-                UIKitHelper.alert("IP 格式不对", "请输入形如 10.10.10.121 或 10.10.10.28:5556 的地址。", in: self); return
+                UIKitHelper.alert("IP 格式不对", "请输入形如 10.10.10.121 的 IPv4 地址。", in: self); return
             }
-            let ports: [UInt16]
-            if parts.count == 2, let port = UInt16(parts[1]), port > 0 {
-                ports = [port]
-            } else {
-                ports = AdbScanPorts.extended
-            }
-            self.startScan(bases: [], singleIPs: [ip], ports: ports, label: "直连 \(raw)")
-        }
+            let ports: [UInt16] = (UInt16(portText).flatMap { $0 > 0 ? $0 : nil }).map { [$0] } ?? AdbScanPorts.extended
+            self.startScan(bases: [], singleIPs: [ip], ports: ports, label: "直连 \(ip)")
+        })
+        ac.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(ac, animated: true)
     }
 
     private func startScan(bases: [String], singleIPs: [String],
@@ -152,15 +166,9 @@ final class DeviceListViewController: UIViewController {
         autoButton.alpha = 0.6
         // mDNS 动态端口（Android 11+ 无线调试）无法靠端口表扫出来，同步用 Bonjour 发现
         bonjour?.stop()
-        bonjour = AdbBonjourBrowser { [weak self] ip, port in
+        bonjour = AdbBonjourBrowser { [weak self] ip, port, serviceType in
             guard let self, self.scanToken == token else { return }
-            let host = AdbHost(ip: ip, port: port)
-            if self.hosts[host] == nil {
-                self.hosts[host] = ""
-                self.tableView.reloadData()
-                self.updateEmpty()
-                self.fetchModel(for: host, token: token)
-            }
+            self.handleMdnsFound(ip: ip, port: port, serviceType: serviceType, token: token)
         }
         bonjour?.start()
         LanScanner.scan(bases: bases, singleIPs: singleIPs, ports: ports) { [weak self] host in
@@ -208,6 +216,165 @@ final class DeviceListViewController: UIViewController {
                     self.tableView.reloadData()
                 }
             } catch { client.disconnect() }
+        }
+    }
+
+    /// mDNS 发现的设备：_adb-tls-connect 是 Android 11+ 无线调试（TLS-only adbd），连接必须走 TLS
+    private func handleMdnsFound(ip: String, port: UInt16, serviceType: String, token: Int) {
+        if serviceType.contains("_adb-tls-connect") {
+            AdbClient.setTLSRequired(ip, required: true)
+        }
+        let host = AdbHost(ip: ip, port: port)
+        if self.hosts[host] == nil {
+            self.hosts[host] = ""
+            self.tableView.reloadData()
+            self.updateEmpty()
+            self.fetchModel(for: host, token: token)
+        }
+    }
+
+    // MARK: 无线调试配对（Android 11+ 配对码）
+
+    @objc private func pairingCode() {
+        let ac = UIAlertController(title: "无线调试配对",
+            message: "电视 → 开发者选项 → 无线调试 → 使用配对码配对设备：\n① 先点下方「查找配对端口」自动填充 IP/端口（配对弹窗打开期间才有效）\n② 输入电视上显示的 6 位配对码\n③ 点「配对」",
+            preferredStyle: .alert)
+        ac.addTextField { $0.placeholder = "电视 IP（如 10.10.10.121）"; $0.keyboardType = .decimalPad }
+        ac.addTextField { $0.placeholder = "配对端口（弹窗里的端口，非 5555）"; $0.keyboardType = .numberPad }
+        ac.addTextField { $0.placeholder = "6 位配对码"; $0.keyboardType = .numberPad }
+        ac.addAction(UIAlertAction(title: "查找配对端口", style: .default) { [weak self, weak ac] _ in
+            self?.findPairingService(alert: ac)
+        })
+        ac.addAction(UIAlertAction(title: "配对", style: .default) { [weak self, weak ac] _ in
+            guard let self, let ac else { return }
+            let ip = (ac.textFields?[0].text ?? "").trimmingCharacters(in: .whitespaces)
+            let portText = (ac.textFields?[1].text ?? "").trimmingCharacters(in: .whitespaces)
+            let code = (ac.textFields?[2].text ?? "").trimmingCharacters(in: .whitespaces)
+            guard LanScanner.validIPv4(ip), let port = UInt16(portText), port > 0 else {
+                UIKitHelper.alert("信息不完整", "请填写电视 IP 和配对弹窗显示的端口。", in: self); return
+            }
+            self.runPairing(ip: ip, port: port, code: code)
+        })
+        ac.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(ac, animated: true)
+    }
+
+    /// 自动查找正在配对模式的设备（_adb-tls-pairing._tcp）并回填 IP/端口
+    private func findPairingService(alert: UIAlertController?) {
+        let hud = UIAlertController(title: "正在查找配对设备…",
+            message: "请保持电视的配对弹窗处于打开状态（最多 10 秒）", preferredStyle: .alert)
+        present(hud, animated: true)
+        var done = false
+        let browser = AdbPairingBrowser { [weak self, weak hud] ip, port in
+            guard !done else { return }
+            done = true
+            browser.stop()
+            DispatchQueue.main.async {
+                hud?.dismiss(animated: true) {
+                    alert?.textFields?[0].text = ip
+                    alert?.textFields?[1].text = "\(port)"
+                    self?.view.window?.makeKeyAndVisible()
+                }
+            }
+        }
+        browser.start()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak hud] in
+            if !done {
+                done = true
+                browser.stop()
+                hud?.dismiss(animated: true) {
+                    if let self { UIKitHelper.alert("未找到配对设备", "请确认电视的配对弹窗正在显示，再重试。", in: self) }
+                }
+            }
+        }
+    }
+
+    /// 执行配对；成功后登记 TLS、尝试发现无线调试端口并记住设备
+    private func runPairing(ip: String, port: UInt16, code: String) {
+        let hud = UIAlertController(title: "配对中…", message: "正在与电视交换密钥", preferredStyle: .alert)
+        present(hud, animated: true)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let guid = try PairingClient.pair(host: ip, port: port, code: code) { text in
+                    DispatchQueue.main.async { hud.message = text }
+                }
+                AdbClient.setTLSRequired(ip, required: true)
+                DispatchQueue.main.async {
+                    hud.dismiss(animated: true) {
+                        self?.afterPairing(ip: ip, guid: guid)
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    hud.dismiss(animated: true) {
+                        UIKitHelper.alert("配对失败", error.localizedDescription + "\n\n常见原因：配对码输错、配对弹窗已关闭、端口填错（要用配对弹窗里的端口，不是 5555）。", in: self)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 配对成功：找无线调试端口（mDNS），连上并记住设备
+    private func afterPairing(ip: String, guid: String) {
+        let hud = UIAlertController(title: "配对成功 ✓",
+            message: "设备 GUID：\(guid)\n正在查找无线调试端口…", preferredStyle: .alert)
+        present(hud, animated: true)
+        var done = false
+        let browser = AdbBonjourBrowser(serviceTypes: ["_adb-tls-connect._tcp."]) { [weak self, weak hud] foundIp, foundPort, _ in
+            guard foundIp == ip, !done else { return }
+            done = true
+            browser.stop()
+            DispatchQueue.main.async {
+                self?.connectAfterPairing(ip: foundIp, port: foundPort, guid: guid, hud: hud)
+            }
+        }
+        browser.start()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak hud] in
+            if !done {
+                done = true
+                browser.stop()
+                hud?.dismiss(animated: true) {
+                    if let self {
+                        UIKitHelper.alert("配对成功，但未找到无线调试端口",
+                            "请回到首页重新扫描（自动扫描本机网段），新发现的无线调试设备可直接连接。", in: self)
+                    }
+                }
+            }
+        }
+    }
+
+    private func connectAfterPairing(ip: String, port: UInt16, guid: String, hud: UIAlertController?) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var model = ""
+            var ok = false
+            let client = AdbClient()
+            do {
+                try client.connect(host: ip, port: port)
+                let info = client.readDeviceInfo()
+                model = info.model
+                ok = true
+            } catch {
+                AdbLog.log("配对后连接失败：\(error.localizedDescription)", level: "W")
+            }
+            DispatchQueue.main.async {
+                if ok && !model.isEmpty {
+                    DeviceStore.remember(ip: ip, port: port, name: model)
+                    if let self {
+                        hud?.dismiss(animated: true) {
+                            self.openDevice(AdbHost(ip: ip, port: port), model: model)
+                        }
+                    }
+                } else {
+                    hud?.dismiss(animated: true) {
+                        if let self {
+                            UIKitHelper.alert("配对成功，连接未就绪",
+                                "设备已记住（GUID \(guid)）。无线调试端口会变动，请回首页重新扫描后连接。", in: self)
+                        }
+                    }
+                }
+                self?.saved = DeviceStore.all()
+                self?.tableView.reloadData()
+            }
         }
     }
 

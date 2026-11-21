@@ -56,9 +56,10 @@
   <key>NSBonjourServices</key>
   <array>
     <string>_http._tcp</string>
-    <!-- Android 11+ 无线调试（_adb-tls-connect）与老系统 ADB（_adb）的 mDNS 服务类型 -->
+    <!-- Android 11+ 无线调试（_adb-tls-connect / _adb-tls-pairing）与老系统 ADB（_adb）的 mDNS 服务类型 -->
     <string>_adb._tcp</string>
     <string>_adb-tls-connect._tcp</string>
+    <string>_adb-tls-pairing._tcp</string>
   </array>
   <key>NSCameraUsageDescription</key>
   <string>用于「投摄像头」把手机画面投到电视。</string>

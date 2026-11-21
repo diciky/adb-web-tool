@@ -173,17 +173,24 @@ final class AdbBonjourBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDe
 
     private let browser = NetServiceBrowser()
     private var resolving: [NetService] = []
-    private let onFound: (String, UInt16) -> Void
+    private let serviceTypes: [String]
+    private let onFound: (String, UInt16, String) -> Void
 
-    init(onFound: @escaping (String, UInt16) -> Void) {
+    /// 默认发现无线调试（_adb-tls-connect）与老系统 ADB（_adb）服务；
+    /// 也可传入 ["_adb-tls-pairing._tcp."] 专门查找配对服务。
+    /// 回调第三个参数为命中的服务类型（用于区分 TLS 设备与普通设备）。
+    init(serviceTypes: [String] = ["_adb-tls-connect._tcp.", "_adb._tcp."],
+         onFound: @escaping (String, UInt16, String) -> Void) {
+        self.serviceTypes = serviceTypes
         self.onFound = onFound
         super.init()
         browser.delegate = self
     }
 
     func start() {
-        browser.searchForServices(ofType: "_adb-tls-connect._tcp.", inDomain: "local.")
-        browser.searchForServices(ofType: "_adb._tcp.", inDomain: "local.")
+        for type in serviceTypes {
+            browser.searchForServices(ofType: type, inDomain: "local.")
+        }
     }
 
     func stop() {
@@ -200,8 +207,9 @@ final class AdbBonjourBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDe
 
     func netServiceDidResolveAddress(_ sender: NetService) {
         defer { resolving.removeAll { $0 === sender } }
-        guard sender.port > 0, let ip = sender.addresses?.compactMap(Self.ipv4(from:)).first else { return }
-        onFound(ip, UInt16(clamping: sender.port))
+        guard sender.port > 0,
+              let ip = sender.addresses?.compactMap(Self.ipv4(from:)).first else { return }
+        onFound(ip, UInt16(clamping: sender.port), sender.type)
     }
 
     func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {

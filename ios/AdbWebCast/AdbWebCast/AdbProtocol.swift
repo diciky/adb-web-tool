@@ -92,8 +92,40 @@ extension Data {
     }
 }
 
+// MARK: - 传输层抽象：普通 TCP（AdbSocket）与 TLS（AdbTLSTransport，Android 11+ 无线调试）共用
+protocol AdbTransport: AnyObject {
+    var isValid: Bool { get }
+    var remoteClosed: Bool { get }
+    var readTimeoutSeconds: Int { get set }
+    func connect(host: String, port: UInt16, timeout: TimeInterval) throws
+    func setReadTimeout(_ seconds: Int)
+    func writeAll(_ data: Data) throws
+    func receiveExact(_ count: Int) throws -> Data
+    func receiveMessage() throws -> AdbMessage
+    /// 仅在 timeoutMs 内能凑出一整帧时返回，否则返回 nil
+    func receiveMessageIfAvailable(timeoutMs: Int) -> AdbMessage?
+    func closeSocket()
+}
+
+extension AdbTransport {
+    func sendMessage(_ msg: AdbMessage) throws { try writeAll(msg.encoded) }
+    func receiveMessage() throws -> AdbMessage {
+        let h = try receiveExact(24)
+        let command = UInt32.fromLE(Array(h[0..<4]))
+        let arg0 = UInt32.fromLE(Array(h[4..<8]))
+        let arg1 = UInt32.fromLE(Array(h[8..<12]))
+        let len = UInt32.fromLE(Array(h[12..<16]))
+        let magic = UInt32.fromLE(Array(h[20..<24]))
+        guard magic == (command ^ 0xffffffff) else {
+            throw AdbError.protocolError("帧 magic 校验失败")
+        }
+        let data = len > 0 ? try receiveExact(Int(len)) : Data()
+        return AdbMessage(command: command, arg0: arg0, arg1: arg1, data: data)
+    }
+}
+
 // MARK: - TCP socket 封装（阻塞式，带超时）
-final class AdbSocket {
+final class AdbSocket: AdbTransport {
     private var fd: Int32 = -1
     var readTimeoutSeconds: Int = 20
     /// 共享连接是否被对端关闭（read()==0）。用于长连接复用前的健康检查。
@@ -190,20 +222,6 @@ final class AdbSocket {
         return try? receiveMessage()
     }
 
-    func receiveMessage() throws -> AdbMessage {
-        let h = try receiveExact(24)
-        let command = UInt32.fromLE(Array(h[0..<4]))
-        let arg0 = UInt32.fromLE(Array(h[4..<8]))
-        let arg1 = UInt32.fromLE(Array(h[8..<12]))
-        let len = UInt32.fromLE(Array(h[12..<16]))
-        let magic = UInt32.fromLE(Array(h[20..<24]))
-        guard magic == (command ^ 0xffffffff) else {
-            throw AdbError.protocolError("帧 magic 校验失败")
-        }
-        let data = len > 0 ? try receiveExact(Int(len)) : Data()
-        return AdbMessage(command: command, arg0: arg0, arg1: arg1, data: data)
-    }
-
     func closeSocket() { if fd >= 0 { close(fd); fd = -1 } }
 }
 
@@ -234,10 +252,15 @@ final class AdbClient {
     // 关键修复：ADB 每建一条 TCP 连接都要走一次 RSA 授权握手，电视未勾选「始终允许」时
     // 每条新连接都会弹授权框。这里让全 App 所有功能复用同一条已认证连接，一次授权即可，
     // 不再每个功能重复握手；并用递归锁把命令串行化，避免多通道帧串台。
-    private static let sharedSocket = AdbSocket()
+    private static var sharedTransport: AdbTransport = AdbSocket()
     private static let connLock = NSRecursiveLock()
     private static var connectedKey = ""
     private static var idCounter: UInt32 = 1
+    /// 需要走 TLS 连接的主机（Android 11+ 无线调试端口 / 已配对设备）。
+    /// 通过 mDNS _adb-tls-connect 发现或配对成功时登记；连接时自动选择 TLS 传输层。
+    private static var tlsRequiredHosts: Set<String> = []
+    /// 当前共享连接是否为 TLS 模式（切换设备时按需重建传输层）
+    private static var usingTLS = false
     /// 帧缓存池：ADB 是多路复用协议，服务端可能先发来"上一条通道"的残留帧
     /// （如 WRTE/CLSE）。旧实现把它们当无关帧丢弃并计数报错，导致"过多无关帧"。
     /// 正确做法（adbkit/adb-shell 的 packet store）：按 arg1(localId) 暂存，
@@ -251,6 +274,7 @@ final class AdbClient {
     /// 最近一次成功连接的设备（自动重连时复用，等价 adb server 的 transport 重启）
     private static var lastHost: String?
     private static var lastPort: UInt16 = 5555
+    private static var lastTLS = false
     /// 复刻官方 adb server 的常驻行为：iOS 会杀掉后台空闲 TCP，回前台时主动废弃旧连接，
     /// 下一条命令自动重连（已授权电视 <1 秒、无授权弹窗），杜绝半开连接导致的卡死。
     private static let foregroundHook: Void = {
@@ -262,7 +286,21 @@ final class AdbClient {
         return ()
     }()
 
-    private var socket: AdbSocket { Self.sharedSocket }
+    private var socket: AdbTransport { Self.sharedTransport }
+
+    /// 登记/取消某台设备的 TLS 要求（配对成功、mDNS 安全发现时调用）
+    static func setTLSRequired(_ ip: String, required: Bool) {
+        Self.connLock.lock(); defer { Self.connLock.unlock() }
+        if required { Self.tlsRequiredHosts.insert(ip) } else { Self.tlsRequiredHosts.remove(ip) }
+        // 传输层模式可能与新要求不一致：若当前连接指向该主机，直接作废，下次重连时重建
+        if Self.lastHost == ip { Self.connectedKey = "" }
+    }
+
+    static func isTLSRequired(_ ip: String) -> Bool { Self.tlsRequiredHosts.contains(ip) }
+
+    private static func makeTransport(tls: Bool) -> AdbTransport {
+        tls ? AdbTLSTransport() : AdbSocket()
+    }
 
     private func allocLocalId() -> UInt32 {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
@@ -274,23 +312,30 @@ final class AdbClient {
     func connect(host: String, port: UInt16 = 5555) throws {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
         _ = Self.foregroundHook   // 确保前台重连钩子已注册
+        let tls = Self.tlsRequiredHosts.contains(host)
         let key = "\(host):\(port)"
         Self.lastHost = host
         Self.lastPort = port
-        // 同一设备且连接仍有效 → 直接复用，跳过握手（不再弹 RSA 授权框）
-        if Self.connectedKey == key && Self.sharedSocket.isValid {
-            AdbLog.log("连接复用 \(key)")
+        Self.lastTLS = tls
+        // 同一设备且连接仍有效（且传输层模式一致）→ 直接复用，跳过握手
+        if Self.connectedKey == key && Self.usingTLS == tls && Self.sharedTransport.isValid {
+            AdbLog.log("连接复用 \(key)\(tls ? "（TLS）" : "")")
             return
         }
-        AdbLog.log("新建连接 \(key)（原 key=\(Self.connectedKey.isEmpty ? "无" : Self.connectedKey)）")
+        let tlsMark = tls ? "（TLS/无线调试）" : ""
+        AdbLog.log("新建连接 \(key)\(tlsMark)（原 key=\(Self.connectedKey.isEmpty ? "无" : Self.connectedKey)）")
         // 设备变更或旧连接已断 → 重建连接并握手
-        Self.sharedSocket.closeSocket()
+        Self.sharedTransport.closeSocket()
+        if Self.usingTLS != tls {
+            Self.sharedTransport = makeTransport(tls: tls)
+            Self.usingTLS = tls
+        }
         Self.packetStore.removeAll()   // 新连接，丢弃旧通道的残留帧
         Self.deviceMaxData = 4096     // 新连接重新协商，先按最保守值发
         do {
-            AdbLog.log("TCP 连接 \(host):\(port)")
-            postStage("正在连接电视 \(host):\(port)…")
-            try Self.sharedSocket.connect(host: host, port: port)
+            AdbLog.log("\(tls ? "TLS" : "TCP") 连接 \(host):\(port)")
+            postStage("正在连接电视 \(host):\(port)\(tls ? "（TLS）" : "")…")
+            try Self.sharedTransport.connect(host: host, port: port)
             // 握手超时按阶段内部分级控制（见 handshake），保证已授权电视秒级完成
             try handshake()
             Self.connectedKey = key
@@ -301,12 +346,12 @@ final class AdbClient {
             // 已授权电视 <1s 完成，等价 adb server 的传输自动重启。
             if case AdbError.ioError = error {
                 AdbLog.log("连接失败，半开兜底重试：\(error.localizedDescription)", level: "W")
-                Self.sharedSocket.closeSocket()
+                Self.sharedTransport.closeSocket()
                 Self.packetStore.removeAll()
                 Self.deviceMaxData = 4096
                 do {
                     postStage("检测到旧连接已失效，正在自动重连…")
-                    try Self.sharedSocket.connect(host: host, port: port)
+                    try Self.sharedTransport.connect(host: host, port: port)
                     try handshake()
                     Self.connectedKey = key
                     return
@@ -386,11 +431,15 @@ final class AdbClient {
     /// 断线重连（连接已持锁）。等价 adb server 的 transport 重启：用最近设备重新握手。
     private func reconnectLocked() throws {
         guard let h = Self.lastHost else { throw AdbError.connectionFailed("无可用连接") }
-        Self.sharedSocket.closeSocket()
+        Self.sharedTransport.closeSocket()
+        if Self.usingTLS != Self.lastTLS {
+            Self.sharedTransport = makeTransport(tls: Self.lastTLS)
+            Self.usingTLS = Self.lastTLS
+        }
         Self.packetStore.removeAll()
         Self.connectedKey = ""
         Self.idCounter = 1
-        try Self.sharedSocket.connect(host: h, port: Self.lastPort)
+        try Self.sharedTransport.connect(host: h, port: Self.lastPort)
         try handshake()
         Self.connectedKey = "\(h):\(Self.lastPort)"
     }
@@ -963,7 +1012,7 @@ final class AdbClient {
     /// 仅在切换设备/确认连接失效时主动废弃共享连接。
     func invalidate() {
         Self.connLock.lock(); defer { Self.connLock.unlock() }
-        Self.sharedSocket.closeSocket()
+        Self.sharedTransport.closeSocket()
         Self.connectedKey = ""
     }
     deinit { /* 共享连接由 App 生命周期管理，不随单个页面/实例释放 */ }

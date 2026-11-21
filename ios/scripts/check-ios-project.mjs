@@ -41,6 +41,10 @@ const required = [
   'AdbWebCast/AdbWebCast/TextInputViewController.swift',
   'AdbWebCast/AdbWebCast/HealthViewController.swift',
   'AdbWebCast/AdbWebCast/PurchaseManager.swift',
+  'AdbWebCast/AdbWebCast/PairingCrypto.swift',
+  'AdbWebCast/AdbWebCast/AdbTLSTransport.swift',
+  'AdbWebCast/AdbWebCast/AdbIdentity.swift',
+  'AdbWebCast/AdbWebCast/PairingClient.swift',
   'AdbWebCast/AdbWebCast/ScheduleStore.swift',
   'AdbWebCast/AdbWebCast/ScheduleViewController.swift',
   'AdbWebCast/AdbWebCast/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png',
@@ -162,17 +166,62 @@ for (const needle of ['getifaddrs', 'localInterfaces', 'inet_pton', 'scanLocalNe
 }
 // v3.7.2：国产设备非标 ADB 端口扫描 + mDNS 动态端口发现；直连必须支持 IP:端口
 const listLanSrc = readFileSync(join(swiftDir, 'DeviceListViewController.swift'), 'utf8');
-for (const needle of ['AdbScanPorts.extended', 'AdbBonjourBrowser', 'split(separator: ":", maxSplits: 1)']) {
+for (const needle of ['AdbScanPorts.extended', 'AdbBonjourBrowser']) {
   if (!listLanSrc.includes(needle)) fail(`设备列表缺少 ${needle}`);
 }
+// v3.7.2：直连支持 IP:端口 一体格式（或 IP/端口分栏输入）
+if (!listLanSrc.includes('firstIndex(of: ":")') && !listLanSrc.includes('split(separator: ":"')) {
+  fail('直连缺少 IP:端口 解析');
+}
 const infoXml = readFileSync(mustExist('AdbWebCast/AdbWebCast/Info.plist'), 'utf8');
-for (const svc of ['_adb._tcp', '_adb-tls-connect._tcp']) {
+for (const svc of ['_adb._tcp', '_adb-tls-connect._tcp', '_adb-tls-pairing._tcp']) {
   if (!infoXml.includes(`<string>${svc}</string>`)) fail(`Info.plist NSBonjourServices 缺少 ${svc}`);
 }
 if (readFileSync(join(swiftDir, 'AdbProtocol.swift'), 'utf8').includes('enum AdbProbe')) {
   ok('ADB 握手探测（过滤 VPN 伪开放端口）齐全');
 } else fail('缺少 AdbProbe 握手探测');
 if (!failed) ok('局域网扫描（自动/手动网段/IP 直连 + 5555 探测）齐全');
+
+// ---------- v3.8.0：Android 11+ 无线调试配对（SPAKE2/TLS/exporter 协议关键点） ----------
+const pairCrypto = readFileSync(join(swiftDir, 'PairingCrypto.swift'), 'utf8');
+for (const needle of ['"adb pair client"', '"adb pair server"',
+                      'SHA512', 'adb pairing_auth aes-128-gcm key', 'spake2_role'.replace('spake2_role', 'alice'), 'EdPoint']) {
+  if (!pairCrypto.includes(needle)) fail(`PairingCrypto.swift 缺少 ${needle}`);
+}
+// 掩码点必须完整存在（PairingCrypto 里以字节数组书写：0x5a, 0xda...）：去掉 0x/空格/逗号后对比
+const pairHexNorm = pairCrypto.replace(/0x/g, '').replace(/[\s,]/g, '').toLowerCase();
+for (const full of ['5ada7e4bf6ddd9adb6626d32131c6b5c51a1e347a3478f53cfcf441b88eed12e',
+                    '10e3df0ae37d8e7a99b5fe74b44672103dbddcbd06af680d71329a11693bc778']) {
+  if (!pairHexNorm.includes(full)) fail(`PairingCrypto.swift 缺少完整掩码点 ${full.slice(0, 16)}…`);
+}
+const tlsTransport = readFileSync(join(swiftDir, 'AdbTLSTransport.swift'), 'utf8');
+for (const needle of ['TLSv13', 'sec_protocol_options_set_local_identity', 'sec_protocol_metadata_create_secret',
+                      'NWProtocolTLS.Metadata', 'verify_block']) {
+  if (!tlsTransport.includes(needle)) fail(`AdbTLSTransport.swift 缺少 ${needle}`);
+}
+const identitySrc = readFileSync(join(swiftDir, 'AdbIdentity.swift'), 'utf8');
+for (const needle of ['rsaSignatureMessagePKCS1v15SHA256', 'SecIdentityCreateWithCertificate',
+                      'oidSHA256withRSA', 'adbwebcast.tls.identity']) {
+  if (!identitySrc.includes(needle)) fail(`AdbIdentity.swift 缺少 ${needle}`);
+}
+const pairingSrc = readFileSync(join(swiftDir, 'PairingClient.swift'), 'utf8');
+for (const needle of ['adb-label', 'func pair(host', 'PEER_INFO', 'theirType == 1',
+                      '_adb-tls-pairing._tcp', 'AdbPairingBrowser', 'peerPublicKeyData']) {
+  if (!pairingSrc.includes(needle)) fail(`PairingClient.swift 缺少 ${needle}`);
+}
+// 传输层抽象 + TLS 注册表
+for (const needle of ['protocol AdbTransport', 'sharedTransport', 'tlsRequiredHosts', 'setTLSRequired', 'AdbTLSTransport()']) {
+  if (!proto.includes(needle)) fail(`AdbProtocol.swift 缺少 ${needle}`);
+}
+for (const needle of ['PairingClient.pair', 'AdbPairingBrowser', 'findPairingService', 'setTLSRequired']) {
+  if (!listLanSrc.includes(needle)) fail(`设备列表缺少配对入口 ${needle}`);
+}
+const pbxPair = readFileSync(join(proj, 'AdbWebCast.xcodeproj/project.pbxproj'), 'utf8');
+for (const f of ['PairingCrypto.swift in Sources', 'AdbTLSTransport.swift in Sources',
+                 'AdbIdentity.swift in Sources', 'PairingClient.swift in Sources']) {
+  if (!pbxPair.includes(f)) fail(`工程未编译 ${f.replace(' in Sources', '')}`);
+}
+if (!failed) ok('Android 11+ 配对协议关键点齐全');
 
 // ---------- AppDelegate 根控制器 ----------
 const app = readFileSync(join(swiftDir, 'AppDelegate.swift'), 'utf8');
