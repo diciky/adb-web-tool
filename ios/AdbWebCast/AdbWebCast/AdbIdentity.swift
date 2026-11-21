@@ -233,7 +233,7 @@ final class AdbIdentity {
         guard idStatus == errSecSuccess, let ref else {
             throw AdbIdentityError.keychain("identity: \(idStatus)")
         }
-        return ref as SecIdentity
+        return unsafeDowncast(ref, to: SecIdentity.self)
         #endif
     }
 
