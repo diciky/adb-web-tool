@@ -52,10 +52,13 @@
   </dict>
   <!-- 局域网发现/访问权限（iOS 14+ 会弹「查找本地网络设备」） -->
   <key>NSLocalNetworkUsageDescription</key>
-  <string>需要扫描当前 WiFi 或热点网段，发现并连接局域网内的 ADB 电视。</string>
+  <string>需要扫描当前 WiFi 或热点网段，发现并连接局域网内的 ADB 电视（自动尝试 5555、5556、5114 等常见端口，并通过 mDNS 发现无线调试设备）。</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_http._tcp</string>
+    <!-- Android 11+ 无线调试（_adb-tls-connect）与老系统 ADB（_adb）的 mDNS 服务类型 -->
+    <string>_adb._tcp</string>
+    <string>_adb-tls-connect._tcp</string>
   </array>
   <key>NSCameraUsageDescription</key>
   <string>用于「投摄像头」把手机画面投到电视。</string>

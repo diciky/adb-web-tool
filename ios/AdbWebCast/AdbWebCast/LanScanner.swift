@@ -5,6 +5,16 @@ import Glibc
 import Darwin
 #endif
 
+/// 常见 ADB TCP 端口（国产电视/盒子大量不用默认 5555）：
+/// - 5555：adb tcpip 默认
+/// - 5554/5556-5560：多实例与厂商定制固件（当贝 OS 5556、模拟器 5554 等）
+/// - 5114：部分网络机顶盒实测端口
+/// - 5037：个别设备把 adb server 端口直接暴露在局域网
+/// - 62001：夜神等安卓模拟器（同网段调试也顺手支持）
+enum AdbScanPorts {
+    static let extended: [UInt16] = [5555, 5554, 5556, 5557, 5558, 5559, 5560, 5114, 5037, 62001]
+}
+
 /// 扫描到的一个开放 ADB 端口的主机
 struct AdbHost: Identifiable, Hashable {
     let id = UUID()
@@ -72,8 +82,9 @@ final class LanScanner {
         return "\(parts[0]).\(parts[1]).\(parts[2])"
     }
 
-    /// 纯 TCP 探测端口是否可连接（快速预判，后续还要 ADB 握手验证）
-    static func tcpOpen(ip: String, port: UInt16, timeoutMs: Int = 500) -> Bool {
+    /// 纯 TCP 探测端口是否可连接（快速预判，后续还要 ADB 握手验证）。
+    /// 多端口 × 254 主机时单次超时不能太长，300ms 在普通 WiFi 上足够可靠。
+    static func tcpOpen(ip: String, port: UInt16, timeoutMs: Int = 300) -> Bool {
         let fd = socket(AF_INET, Int32(SOCK_STREAM), 0)
         guard fd >= 0 else { return false }
         defer { close(fd) }
@@ -108,12 +119,15 @@ final class LanScanner {
     }
 
     /// 扫描给定 /24 网段；TCP 预判通过后再做 ADB 握手验证；并发执行，主线程回调。
-    static func scan(bases: [String], singleIPs: [String] = [], ports: [UInt16] = [5555],
+    /// 网段扫描对每个 IP 逐个尝试 ports 里的全部端口（国产设备常见 5556/5114 等非标端口）。
+    static func scan(bases: [String], singleIPs: [String] = [], ports: [UInt16] = AdbScanPorts.extended,
                      onFound: @escaping (AdbHost) -> Void,
                      onDone: @escaping (Int) -> Void) {
         var targets: [(String, UInt16)] = []
         for base in Set(bases) {
-            for last in 1...254 { targets.append(("\(base).\(last)", ports.first ?? 5555)) }
+            for last in 1...254 {
+                for port in ports { targets.append(("\(base).\(last)", port)) }
+            }
         }
         for ip in Set(singleIPs) {
             for p in ports { targets.append((ip, p)) }
@@ -149,5 +163,65 @@ final class LanScanner {
         let ifaces = localInterfaces()
         let bases = ifaces.compactMap { subnetBase(of: $0.ip) }
         scan(bases: bases, ports: ports, onFound: onFound) { found in onDone(ifaces, found) }
+    }
+}
+
+/// Bonjour/mDNS 发现：Android 11+ 无线调试会用 `_adb-tls-connect._tcp` 广播随机端口，
+/// 老系统部分电视用 `_adb._tcp`。这类动态端口无法靠固定列表扫出来，必须靠 mDNS。
+/// iOS 14+ 需要在 Info.plist 的 NSBonjourServices 里声明这两个服务类型，并授权本地网络。
+final class AdbBonjourBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+
+    private let browser = NetServiceBrowser()
+    private var resolving: [NetService] = []
+    private let onFound: (String, UInt16) -> Void
+
+    init(onFound: @escaping (String, UInt16) -> Void) {
+        self.onFound = onFound
+        super.init()
+        browser.delegate = self
+    }
+
+    func start() {
+        browser.searchForServices(ofType: "_adb-tls-connect._tcp.", inDomain: "local.")
+        browser.searchForServices(ofType: "_adb._tcp.", inDomain: "local.")
+    }
+
+    func stop() {
+        browser.stop()
+        resolving.forEach { $0.stop() }
+        resolving.removeAll()
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        service.delegate = self
+        resolving.append(service)
+        service.resolve(withTimeout: 5)
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        defer { resolving.removeAll { $0 === sender } }
+        guard sender.port > 0, let ip = sender.addresses?.compactMap(Self.ipv4(from:)).first else { return }
+        onFound(ip, UInt16(clamping: sender.port))
+    }
+
+    func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
+        resolving.removeAll { $0 === sender }
+    }
+
+    private static func ipv4(from data: Data) -> String? {
+        data.withUnsafeBytes { raw -> String? in
+            guard raw.count >= MemoryLayout<sockaddr_in>.size else { return nil }
+            var addr = raw.baseAddress!.assumingMemoryBound(to: sockaddr_in.self).pointee
+            guard Int32(addr.sin_family) == AF_INET else { return nil }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    getnameinfo($0, socklen_t(MemoryLayout<sockaddr_in>.size),
+                                &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST)
+                }
+            }
+            guard result == 0 else { return nil }
+            return String(cString: host)
+        }
     }
 }

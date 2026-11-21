@@ -8,6 +8,7 @@ final class DeviceListViewController: UIViewController {
     private var interfaces: [LocalInterface] = []
     private var scanning = false
     private var scanToken = 0
+    private var bonjour: AdbBonjourBrowser?
 
     private let titleLabel: UILabel = {
         let l = UILabel(); l.text = "ADB 电视助手"; l.font = .boldSystemFont(ofSize: 22); return l
@@ -119,17 +120,26 @@ final class DeviceListViewController: UIViewController {
     }
 
     @objc private func directIP() {
-        UIKitHelper.input("输入电视 IP", placeholder: "例如 10.10.10.121", in: self) { [weak self] text in
+        UIKitHelper.input("输入电视 IP（可带端口）", placeholder: "例如 10.10.10.121 或 10.10.10.28:5556", in: self) { [weak self] text in
             guard let self else { return }
-            let ip = text.trimmingCharacters(in: .whitespaces)
+            let raw = text.trimmingCharacters(in: .whitespaces)
+            let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+            let ip = parts.first ?? raw
             guard LanScanner.validIPv4(ip) else {
-                UIKitHelper.alert("IP 格式不对", "请输入形如 10.10.10.121 的合法 IPv4 地址。", in: self); return
+                UIKitHelper.alert("IP 格式不对", "请输入形如 10.10.10.121 或 10.10.10.28:5556 的地址。", in: self); return
             }
-            self.startScan(bases: [], singleIPs: [ip], label: "直连 \(ip)")
+            let ports: [UInt16]
+            if parts.count == 2, let port = UInt16(parts[1]), port > 0 {
+                ports = [port]
+            } else {
+                ports = AdbScanPorts.extended
+            }
+            self.startScan(bases: [], singleIPs: [ip], ports: ports, label: "直连 \(raw)")
         }
     }
 
-    private func startScan(bases: [String], singleIPs: [String], label: String) {
+    private func startScan(bases: [String], singleIPs: [String],
+                           ports: [UInt16] = AdbScanPorts.extended, label: String) {
         guard !scanning else { return }
         scanning = true
         scanToken += 1
@@ -140,7 +150,20 @@ final class DeviceListViewController: UIViewController {
         autoButton.setTitle("扫描中…（\(label)）", for: .normal)
         autoButton.isEnabled = false
         autoButton.alpha = 0.6
-        LanScanner.scan(bases: bases, singleIPs: singleIPs) { [weak self] host in
+        // mDNS 动态端口（Android 11+ 无线调试）无法靠端口表扫出来，同步用 Bonjour 发现
+        bonjour?.stop()
+        bonjour = AdbBonjourBrowser { [weak self] ip, port in
+            guard let self, self.scanToken == token else { return }
+            let host = AdbHost(ip: ip, port: port)
+            if self.hosts[host] == nil {
+                self.hosts[host] = ""
+                self.tableView.reloadData()
+                self.updateEmpty()
+                self.fetchModel(for: host, token: token)
+            }
+        }
+        bonjour?.start()
+        LanScanner.scan(bases: bases, singleIPs: singleIPs, ports: ports) { [weak self] host in
             guard let self, self.scanToken == token else { return }
             if self.hosts[host] == nil {
                 self.hosts[host] = ""
@@ -150,6 +173,8 @@ final class DeviceListViewController: UIViewController {
             }
         } onDone: { [weak self] _ in
             guard let self, self.scanToken == token else { return }
+            self.bonjour?.stop()
+            self.bonjour = nil
             self.scanning = false
             self.autoButton.setTitle("自动扫描本机网段", for: .normal)
             self.autoButton.isEnabled = true
@@ -157,7 +182,11 @@ final class DeviceListViewController: UIViewController {
             self.refresh.endRefreshing()
             self.updateEmpty()
             if self.hosts.isEmpty {
-                UIKitHelper.alert("未发现设备", "确认：①电视已开启 ADB 调试且端口 5555 开放；②手机与电视在同一网段（或 IP 直连填对）；③首次连接需在电视上点「允许」。", in: self)
+                UIKitHelper.alert(
+                    "未发现设备",
+                    "确认：①电视已开启 ADB 调试且网络端口开放；②手机与电视在同一网段（或 IP 直连填对，可带端口如 10.10.10.28:5556）；③首次连接需在电视上点「允许」。已自动尝试 5555 / 5554 / 5556-5560 / 5114 / 5037 / 62001 端口，并通过 mDNS 发现无线调试设备。",
+                    in: self
+                )
             }
         }
     }

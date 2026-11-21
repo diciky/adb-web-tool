@@ -156,8 +156,18 @@ if (!failed) ok('内置 ADB 鉴权密钥齐全');
 // ---------- 局域网自适应扫描 ----------
 const lan = readFileSync(join(swiftDir, 'LanScanner.swift'), 'utf8');
 for (const needle of ['getifaddrs', 'localInterfaces', 'inet_pton', 'scanLocalNetwork', '5555',
-                       'AdbProbe.verify', 'singleIPs', 'utun', 'pdp_ip']) {
+                       'AdbProbe.verify', 'singleIPs', 'utun', 'pdp_ip',
+                       'AdbScanPorts.extended', 'AdbBonjourBrowser', '_adb-tls-connect._tcp', '_adb._tcp']) {
   if (!lan.includes(needle)) fail(`LanScanner.swift 缺少 ${needle}`);
+}
+// v3.7.2：国产设备非标 ADB 端口扫描 + mDNS 动态端口发现；直连必须支持 IP:端口
+const listLanSrc = readFileSync(join(swiftDir, 'DeviceListViewController.swift'), 'utf8');
+for (const needle of ['AdbScanPorts.extended', 'AdbBonjourBrowser', 'split(separator: ":", maxSplits: 1)']) {
+  if (!listLanSrc.includes(needle)) fail(`设备列表缺少 ${needle}`);
+}
+const infoXml = readFileSync(mustExist('AdbWebCast/AdbWebCast/Info.plist'), 'utf8');
+for (const svc of ['_adb._tcp', '_adb-tls-connect._tcp']) {
+  if (!infoXml.includes(`<string>${svc}</string>`)) fail(`Info.plist NSBonjourServices 缺少 ${svc}`);
 }
 if (readFileSync(join(swiftDir, 'AdbProtocol.swift'), 'utf8').includes('enum AdbProbe')) {
   ok('ADB 握手探测（过滤 VPN 伪开放端口）齐全');
