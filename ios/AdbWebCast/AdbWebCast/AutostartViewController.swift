@@ -454,7 +454,7 @@ final class AutostartViewController: UIViewController {
 
     /// 组件短名："pkg/.base.BootReceiver" → "BootReceiver"，
     /// "pkg/androidx.work...RescheduleReceiver" → "RescheduleReceiver"
-    private static func shortComponentName(_ component: String) -> String {
+    fileprivate static func shortComponentName(_ component: String) -> String {
         guard let slash = component.firstIndex(of: "/") else { return component }
         let cls = String(component[component.index(after: slash)...])
         let parts = cls.split(separator: ".")
