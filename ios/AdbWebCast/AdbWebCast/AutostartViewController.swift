@@ -11,9 +11,12 @@ private enum AutostartStore {
     struct Snapshot: Codable {
         let savedAt: TimeInterval
         let entries: [StoredEntry]
-        /// 本地禁用的组件列表。dumpsys 的 Resolver Table 不含已禁用组件，
-        /// 必须本地记忆才能在列表里以「已禁用」状态展示并允许重新启用。
+        /// 本地禁用的组件列表（旧版 pm disable 方案遗留，仅向后兼容读取）。
         let disabled: [String]?
+        /// v3.9.2：整包后台自启被 appops 禁止的包名集合。
+        /// Android 8+ shell 无权 pm disable 组件（真机实测 SecurityException），
+        /// 改用 `cmd appops set <pkg> RUN_ANY_IN_BACKGROUND deny` 整包级禁止。
+        let denied: [String]?
     }
 
     static let ttl: TimeInterval = 30 * 60
@@ -29,25 +32,42 @@ private enum AutostartStore {
         return dir.appendingPathComponent("\(key).json")
     }
 
-    static func load(host: AdbHost) -> (entries: [AutostartEntry], disabled: Set<String>)? {
+    static func load(host: AdbHost) -> (entries: [AutostartEntry], disabled: Set<String>, denied: Set<String>)? {
         queue.sync {
             guard let url = fileURL(host: host),
                   let data = try? Data(contentsOf: url),
                   let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data),
                   Date().timeIntervalSince1970 - snapshot.savedAt < ttl else { return nil }
             return (snapshot.entries.map { AutostartEntry(pkg: $0.pkg, component: $0.component, enabled: $0.enabled) },
-                    Set(snapshot.disabled ?? []))
+                    Set(snapshot.disabled ?? []),
+                    Set(snapshot.denied ?? []))
         }
     }
 
-    static func save(host: AdbHost, entries: [AutostartEntry], disabled: Set<String>) {
+    static func save(host: AdbHost, entries: [AutostartEntry], disabled: Set<String>, denied: Set<String>) {
         queue.sync {
             guard let url = fileURL(host: host) else { return }
             let stored = entries.map { StoredEntry(pkg: $0.pkg, component: $0.component, enabled: $0.enabled) }
             let snapshot = Snapshot(savedAt: Date().timeIntervalSince1970, entries: stored,
-                                    disabled: Array(disabled))
+                                    disabled: Array(disabled), denied: Array(denied))
             guard let data = try? JSONEncoder().encode(snapshot) else { return }
             try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// v3.9.2：记录整包自启禁止/恢复（切换成功后调用），无需重扫 dumpsys。
+    static func setDenied(host: AdbHost, pkg: String, denied: Bool) {
+        queue.sync {
+            guard let url = fileURL(host: host),
+                  let data = try? Data(contentsOf: url),
+                  var snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+            var set = Set(snapshot.denied ?? [])
+            if denied { set.insert(pkg) } else { set.remove(pkg) }
+            guard let out = try? JSONEncoder().encode(
+                Snapshot(savedAt: snapshot.savedAt, entries: snapshot.entries,
+                         disabled: snapshot.disabled, denied: Array(set)))
+            else { return }
+            try? out.write(to: url, options: .atomic)
         }
     }
 
@@ -80,6 +100,8 @@ private enum AutostartStore {
 fileprivate struct AutostartAppGroup {
     let pkg: String
     let entries: [AutostartEntry]
+    /// 该应用后台自启是否被 appops 禁止（整包级，Android 8+ 唯一可靠的 shell 禁自启手段）
+    var bgDenied: Bool = false
 }
 
 /// 自启管理页：列出具备 BOOT_COMPLETED 接收器的应用，启用/禁用其开机自启组件。
@@ -157,7 +179,7 @@ final class AutostartViewController: UIViewController {
         // 先显示本地缓存，避免每次进页面都等一次全量 dumpsys。
         if !force, let cached = AutostartStore.load(host: host) {
             apply(entries: Self.mergingDisabled(cached.entries, disabled: cached.disabled),
-                  fromCache: true, error: "", force: false)
+                  deniedPkgs: cached.denied, fromCache: true, error: "", force: false)
             return
         }
 
@@ -167,6 +189,7 @@ final class AutostartViewController: UIViewController {
             guard let self else { return }
             let client = AdbClient()
             var parsed: [AutostartEntry] = []
+            var deniedPkgs = Set<String>()
             var err = ""
             do {
                 try client.connect(host: self.host.ip, port: self.host.port)
@@ -185,8 +208,20 @@ final class AutostartViewController: UIViewController {
                 let all = Self.parseAutostart(from: dump)
                 // 有用户包集合时只保留第三方；拿不到集合（固件不支持 -f）时降级显示全部
                 parsed = userPackages.isEmpty ? all : all.filter { userPackages.contains($0.pkg) }
+                // v3.9.2：批量读取每个用户包的后台自启禁止状态（appops 整包级，
+                // 一条 shell 搞定，避免逐包连接）。deny 输出含 "RUN_ANY_IN_BACKGROUND: deny"
+                // 或 "Default mode: deny"；未设置时是 "Default mode: allow"。
+                var deniedLocal = Set<String>()
+                let targets = userPackages.isEmpty ? Set(parsed.map { $0.pkg }) : userPackages
+                if !targets.isEmpty {
+                    let script = "for p in \(targets.sorted().joined(separator: " ")); do "
+                        + "echo \"PKGBEGIN:$p\"; cmd appops get $p RUN_ANY_IN_BACKGROUND; done"
+                    let opsOut = (try? client.shell(script, timeout: 60)) ?? ""
+                    deniedLocal = Self.parseDeniedPkgs(from: opsOut)
+                }
+                deniedPkgs = deniedLocal
                 let disabledSet = AutostartStore.load(host: self.host)?.disabled ?? []
-                AutostartStore.save(host: self.host, entries: parsed, disabled: disabledSet)
+                AutostartStore.save(host: self.host, entries: parsed, disabled: disabledSet, denied: deniedPkgs)
                 client.disconnect()
             } catch {
                 err = error.localizedDescription
@@ -194,13 +229,30 @@ final class AutostartViewController: UIViewController {
             }
             DispatchQueue.main.async {
                 self.apply(entries: Self.mergingDisabled(parsed, disabled: AutostartStore.load(host: self.host)?.disabled ?? []),
-                           fromCache: false, error: err, force: force)
+                           deniedPkgs: deniedPkgs, fromCache: false, error: err, force: force)
             }
         }
     }
 
+    /// 解析批量 `cmd appops get <pkg> RUN_ANY_IN_BACKGROUND` 输出（真机实测格式：
+    /// "PKGBEGIN:pkg\nNo operations.\nDefault mode: allow" 或 "PKGBEGIN:pkg\nRUN_ANY_IN_BACKGROUND: deny"）
+    static func parseDeniedPkgs(from text: String) -> Set<String> {
+        var denied = Set<String>()
+        var currentPkg = ""
+        for line in text.split(separator: "\n") {
+            let s = String(line).trimmingCharacters(in: .whitespaces)
+            if s.hasPrefix("PKGBEGIN:") {
+                currentPkg = String(s.dropFirst("PKGBEGIN:".count))
+                continue
+            }
+            guard !currentPkg.isEmpty else { continue }
+            if s.contains("deny") { denied.insert(currentPkg) }
+        }
+        return denied
+    }
+
     /// 统一渲染：先灌入持久化资源缓存，再对未解析包做小批量补全。
-    private func apply(entries: [AutostartEntry], fromCache: Bool, error: String, force: Bool) {
+    private func apply(entries: [AutostartEntry], deniedPkgs: Set<String>?, fromCache: Bool, error: String, force: Bool) {
         // 按包名分组（保持首次出现顺序），一行一个应用
         var order: [String] = []
         var byPkg: [String: [AutostartEntry]] = [:]
@@ -208,7 +260,12 @@ final class AutostartViewController: UIViewController {
             if byPkg[e.pkg] == nil { order.append(e.pkg) }
             byPkg[e.pkg, default: []].append(e)
         }
-        groups = order.map { AutostartAppGroup(pkg: $0, entries: byPkg[$0] ?? []) }
+        let deniedSet = deniedPkgs ?? (AutostartStore.load(host: host)?.denied ?? [])
+        groups = order.map { pkg in
+            var g = AutostartAppGroup(pkg: pkg, entries: byPkg[pkg] ?? [])
+            g.bgDenied = deniedSet.contains(pkg)
+            return g
+        }
 
         var resolvedLabels: [String: String] = [:]
         var resolvedIcons: [String: UIImage] = [:]
@@ -414,35 +471,65 @@ final class AutostartViewController: UIViewController {
         return pkg.contains(".") ? pkg : nil
     }
 
-    private func toggle(_ entry: AutostartEntry, completion: ((String?) -> Void)? = nil) {
-        // 粗粒度组件（pkg/*）用包级开关；精确组件用组件级开关
-        let comp = entry.component
-        let cmd: String
-        if comp.hasSuffix("/*") {
-            let pkg = String(comp.dropLast(2))
-            cmd = entry.enabled ? "pm disable \(pkg)" : "pm enable \(pkg)"
-        } else {
-            cmd = entry.enabled ? "pm disable \(comp)" : "pm enable \(comp)"
-        }
+    /// v3.9.2：切换整包后台自启（appops）。
+    /// Android 8+ shell 无权 pm disable 组件（真机实测 SecurityException），
+    /// 整包级 `cmd appops set <pkg> RUN_ANY_IN_BACKGROUND deny` 是唯一可靠的 shell 禁自启手段。
+    /// 注意：shell 命令失败时只输出错误文本不抛异常，必须检查输出内容，
+    /// 否则会像旧版 pm disable 一样误判成功。
+    private func toggleAutostart(pkg: String, deny: Bool, completion: ((String?) -> Void)? = nil) {
+        let cmd = "cmd appops set \(pkg) RUN_ANY_IN_BACKGROUND \(deny ? "deny" : "allow")"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let client = AdbClient()
             var err = ""
             do {
                 try client.connect(host: self.host.ip, port: self.host.port)
-                _ = try client.shell(cmd, timeout: 30)
+                let out = try client.shell(cmd, timeout: 30)
                 client.disconnect()
-                // 本地记忆禁用/启用：禁用的组件会从 dumpsys Resolver Table 消失，
-                // 必须记忆才能在列表里以「已禁用」展示并允许重新启用。
-                AutostartStore.setDisabled(host: self.host, component: comp, disabled: entry.enabled)
-                AutostartStore.invalidate(host: self.host)
+                let lowered = out.lowercased()
+                if lowered.contains("exception") || lowered.contains("security") || lowered.contains("error") {
+                    err = "设备拒绝了该操作：\(out.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))"
+                }
             } catch {
                 err = error.localizedDescription
                 client.disconnect()
             }
             DispatchQueue.main.async {
                 if err.isEmpty {
-                    self.load()
+                    AutostartStore.setDenied(host: self.host, pkg: pkg, denied: deny)
+                    // appops 不影响 dumpsys Resolver Table，无需重扫，直接更新本地状态
+                    self.groups = self.groups.map { g in
+                        guard g.pkg == pkg else { return g }
+                        var copy = g
+                        copy.bgDenied = deny
+                        return copy
+                    }
+                    self.tableView.reloadData()
+                    completion?(nil)
+                } else {
+                    UIKitHelper.alert("禁用失败", err, in: self)
+                    completion?(err)
+                }
+            }
+        }
+    }
+
+    /// 停止应用运行（force-stop）：禁自启后立即杀掉已运行的进程，让限制马上生效。
+    private func forceStopApp(pkg: String, completion: ((String?) -> Void)? = nil) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let client = AdbClient()
+            var err = ""
+            do {
+                try client.connect(host: self.host.ip, port: self.host.port)
+                _ = try client.shell("am force-stop \(pkg)", timeout: 30)
+                client.disconnect()
+            } catch {
+                err = error.localizedDescription
+                client.disconnect()
+            }
+            DispatchQueue.main.async {
+                if err.isEmpty {
+                    UIKitHelper.alert("完成", "已停止 \(pkg) 的所有进程", in: self)
                     completion?(nil)
                 } else {
                     UIKitHelper.alert("失败", err, in: self)
@@ -471,30 +558,27 @@ extension AutostartViewController: UITableViewDataSource, UITableViewDelegate {
         let name = labels[g.pkg] ?? g.pkg
         var cfg = cell.defaultContentConfiguration()
         cfg.text = name
-        // 状态：全启用/全禁用/部分启用
-        let enabledCount = g.entries.filter { $0.enabled }.count
+        // 状态：整包后台自启是否被 appops 禁止（v3.9.2：Android 8+ 唯一可靠手段，整包级）
         let status: String
         let statusColor: UIColor
-        if enabledCount == g.entries.count {
-            status = "已启用"; statusColor = .systemGreen
-        } else if enabledCount == 0 {
-            status = "已禁用"; statusColor = .secondaryLabel
+        if g.bgDenied {
+            status = "自启已禁止"; statusColor = .systemOrange
         } else {
-            status = "\(enabledCount)/\(g.entries.count) 启用"; statusColor = .secondaryLabel
+            status = "允许自启"; statusColor = .systemGreen
         }
         // 组件短名（最多展示 2 个）
         let comps = g.entries.map { Self.shortComponentName($0.component) }
         let shown = comps.prefix(2).joined(separator: "、")
-        let more = comps.count > 2 ? " 等\(comps.count)个组件" : ""
-        cfg.secondaryText = "\(shown)\(more) · \(status)"
+        let more = comps.count > 2 ? " 等\(comps.count)个" : ""
+        cfg.secondaryText = "\(g.entries.count) 个自启组件 · \(status) · \(shown)\(more)"
         cfg.secondaryTextProperties.color = statusColor
         let appImage: UIImage? = icons[g.pkg] ?? (AppLabelResolver.cachedIcon(pkg: g.pkg).flatMap { UIImage(data: $0) })
         if let appImage = appImage {
             cfg.image = appImage.withRenderingMode(.alwaysOriginal)
             cfg.imageProperties.cornerRadius = 6
         } else {
-            cfg.image = UIImage(systemName: enabledCount > 0 ? "bolt.fill" : "bolt.slash")
-            cfg.imageProperties.tintColor = enabledCount > 0 ? .systemOrange : .secondaryLabel
+            cfg.image = UIImage(systemName: g.bgDenied ? "bolt.slash" : "bolt.fill")
+            cfg.imageProperties.tintColor = g.bgDenied ? .secondaryLabel : .systemOrange
         }
         cfg.imageProperties.maximumSize = CGSize(width: 28, height: 28)
         cell.contentConfiguration = cfg
@@ -508,22 +592,53 @@ extension AutostartViewController: UITableViewDataSource, UITableViewDelegate {
         let g = groups[indexPath.row]
         let name = labels[g.pkg] ?? g.pkg
         let icon = icons[g.pkg] ?? (AppLabelResolver.cachedIcon(pkg: g.pkg).flatMap { UIImage(data: $0) })
-        let detail = AutostartComponentListViewController(group: g, appName: name, appIcon: icon) { [weak self] entry, done in
-            self?.toggle(entry, completion: done)
-        }
+        let detail = AutostartComponentListViewController(group: g, appName: name, appIcon: icon,
+                                                          toggleHandler: { [weak self] pkg, deny, done in
+            self?.toggleAutostart(pkg: pkg, deny: deny, completion: done)
+        }, stopHandler: { [weak self] pkg, done in
+            self?.forceStopApp(pkg: pkg, completion: done)
+        })
         navigationController?.pushViewController(detail, animated: true)
     }
 }
 
-// MARK: - 单应用自启组件管理页
+// MARK: - 单应用自启管理页（v3.9.2）
 
-/// 单个应用的自启组件列表：每个 BOOT_COMPLETED 接收器一行，点按切换启用/禁用。
+/// 单个应用的自启管理：顶部整包开关（appops 后台自启禁止）+ 停止应用 +
+/// 只读组件清单。Android 8+ shell 无权 pm disable 单个组件，组件仅作展示。
 private final class AutostartComponentListViewController: UIViewController {
-    private let group: AutostartAppGroup
+    private var group: AutostartAppGroup
     private let appName: String
     private let appIcon: UIImage?
-    /// 切换回调：(entry, completion(err))，成功后 err 为 nil。
-    private let toggleHandler: (AutostartEntry, @escaping (String?) -> Void) -> Void
+    /// 整包切换回调：(pkg, deny, completion(err))，成功后 err 为 nil。
+    private let toggleHandler: (String, Bool, @escaping (String?) -> Void) -> Void
+    /// 停止应用回调：(pkg, completion(err))
+    private let stopHandler: (String, @escaping (String?) -> Void) -> Void
+    private var toggling = false
+
+    private let statusLabel: UILabel = {
+        let l = UILabel(); l.font = .systemFont(ofSize: 15, weight: .medium)
+        l.adjustsFontForContentSizeCategory = true; return l
+    }()
+    private let statusDetail: UILabel = {
+        let l = UILabel(); l.font = .systemFont(ofSize: 12)
+        l.textColor = .secondaryLabel; l.numberOfLines = 0
+        l.adjustsFontForContentSizeCategory = true
+        l.text = "Android 8+ 系统限制：只能整包禁止应用在后台自启（组件级开关已不再可用）。禁止后应用仍可手动打开使用。"
+        return l
+    }()
+    private let toggleButton: UIButton = {
+        let b = UIButton(type: .system)
+        b.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        return b
+    }()
+    private let stopButton: UIButton = {
+        let b = UIButton(type: .system)
+        b.setTitle("停止应用运行", for: .normal)
+        b.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        b.accessibilityLabel = "强制停止该应用的所有进程"
+        return b
+    }()
 
     private let tableView: UITableView = {
         let t = UITableView(frame: .zero)
@@ -533,11 +648,13 @@ private final class AutostartComponentListViewController: UIViewController {
     }()
 
     init(group: AutostartAppGroup, appName: String, appIcon: UIImage?,
-         toggleHandler: @escaping (AutostartEntry, @escaping (String?) -> Void) -> Void) {
+         toggleHandler: @escaping (String, Bool, @escaping (String?) -> Void) -> Void,
+         stopHandler: @escaping (String, @escaping (String?) -> Void) -> Void) {
         self.group = group
         self.appName = appName
         self.appIcon = appIcon
         self.toggleHandler = toggleHandler
+        self.stopHandler = stopHandler
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -546,15 +663,84 @@ private final class AutostartComponentListViewController: UIViewController {
         super.viewDidLoad()
         title = appName
         view.backgroundColor = .systemBackground
-        tableView.dataSource = self
-        tableView.delegate = self
+
+        let card = UIView()
+        card.backgroundColor = .secondarySystemBackground
+        card.layer.cornerRadius = 12
+        let cardStack = UIStackView(arrangedSubviews: [statusLabel, statusDetail, toggleButton, stopButton])
+        cardStack.axis = .vertical; cardStack.spacing = 10
+        cardStack.layoutMargins = UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+        cardStack.isLayoutMarginsRelativeArrangement = true
+        cardStack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(cardStack)
+
+        let headerLabel = UILabel()
+        headerLabel.text = "自启组件（来自系统扫描，供参考）"
+        headerLabel.font = .systemFont(ofSize: 13)
+        headerLabel.textColor = .secondaryLabel
+
+        view.addSubview(card)
+        view.addSubview(headerLabel)
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            card.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            card.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            card.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            cardStack.topAnchor.constraint(equalTo: card.topAnchor),
+            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            headerLabel.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 16),
+            headerLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            headerLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            tableView.topAnchor.constraint(equalTo: headerLabel.bottomAnchor, constant: 8),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+
+        toggleButton.addTarget(self, action: #selector(toggleTapped), for: .touchUpInside)
+        stopButton.addTarget(self, action: #selector(stopTapped), for: .touchUpInside)
+        tableView.dataSource = self
+        refreshStatusUI()
+    }
+
+    private func refreshStatusUI() {
+        if group.bgDenied {
+            statusLabel.text = "自启已禁止"
+            statusLabel.textColor = .systemOrange
+            toggleButton.setTitle("恢复允许自启", for: .normal)
+        } else {
+            statusLabel.text = "当前允许后台自启（开机 / 网络变化等时机自动拉起）"
+            statusLabel.textColor = .label
+            toggleButton.setTitle("禁止后台自启", for: .normal)
+        }
+        toggleButton.accessibilityLabel = group.bgDenied ? "恢复允许自启" : "禁止后台自启"
+    }
+
+    @objc private func toggleTapped() {
+        guard !toggling else { return }
+        let deny = !group.bgDenied
+        let action = deny ? "禁止后台自启" : "恢复允许自启"
+        UIKitHelper.confirm(action, "\(appName)\n\n整包级操作：\(deny ? "禁止该应用在后台被系统自动拉起" : "恢复该应用的后台自启能力")",
+                            in: self, destructive: deny) { [weak self] in
+            guard let self else { return }
+            self.toggling = true
+            self.toggleHandler(self.group.pkg, deny) { [weak self] err in
+                guard let self else { return }
+                self.toggling = false
+                guard err == nil else { return }
+                self.group.bgDenied = deny
+                self.refreshStatusUI()
+            }
+        }
+    }
+
+    @objc private func stopTapped() {
+        UIKitHelper.confirm("停止应用", "结束 \(appName) 的所有进程，未保存的数据会丢失。", in: self) { [weak self] in
+            guard let self else { return }
+            self.stopHandler(self.group.pkg) { _ in }
+        }
     }
 }
 
@@ -566,32 +752,24 @@ extension AutostartComponentListViewController: UITableViewDataSource, UITableVi
         let e = group.entries[indexPath.row]
         var cfg = cell.defaultContentConfiguration()
         cfg.text = AutostartViewController.shortComponentName(e.component)
-        cfg.secondaryText = e.component + (e.enabled ? " · 已启用" : " · 已禁用")
-        cfg.secondaryTextProperties.color = e.enabled ? .systemGreen : .secondaryLabel
+        cfg.secondaryText = e.component
+        cfg.secondaryTextProperties.color = .secondaryLabel
         if let appIcon {
             cfg.image = appIcon.withRenderingMode(.alwaysOriginal)
             cfg.imageProperties.cornerRadius = 6
         } else {
-            cfg.image = UIImage(systemName: e.enabled ? "bolt.fill" : "bolt.slash")
-            cfg.imageProperties.tintColor = e.enabled ? .systemOrange : .secondaryLabel
+            cfg.image = UIImage(systemName: "bolt.fill")
+            cfg.imageProperties.tintColor = .systemOrange
         }
         cfg.imageProperties.maximumSize = CGSize(width: 28, height: 28)
         cell.contentConfiguration = cfg
-        cell.accessibilityLabel = "\(e.component)，\(e.enabled ? "已启用" : "已禁用")，点按切换"
+        cell.selectionStyle = .none
+        cell.accessibilityLabel = "自启组件 \(e.component)"
         return cell
     }
 
     func tableView(_ tv: UITableView, didSelectRowAt indexPath: IndexPath) {
         tv.deselectRow(at: indexPath, animated: true)
-        let e = group.entries[indexPath.row]
-        UIKitHelper.confirm(e.enabled ? "禁用自启" : "启用自启",
-                            "\(appName)\n\(e.component)", in: self, destructive: e.enabled) { [weak self] in
-            guard let self else { return }
-            self.toggleHandler(e) { [weak self] err in
-                guard let self, err == nil else { return }
-                // 切换成功：禁用的组件会从扫描结果消失/启用的会重新出现，返回上级页看最新状态
-                self.navigationController?.popViewController(animated: true)
-            }
-        }
+        // 组件级开关在 Android 8+ 已不可用（shell 权限限制），整包开关在上方卡片
     }
 }
