@@ -37,6 +37,7 @@
 		AA0000000000000000000024 /* PairingCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000024 /* PairingCrypto.swift */; };
 		AA0000000000000000000025 /* AdbTLSTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000025 /* AdbTLSTransport.swift */; };
 		AA0000000000000000000026 /* AdbIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000026 /* AdbIdentity.swift */; };
+		AA0000000000000000000028 /* ProcessListViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000028 /* ProcessListViewController.swift */; };
 		AA0000000000000000000027 /* PairingClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000027 /* PairingClient.swift */; };
 /* End PBXBuildFile section */
 
@@ -73,6 +74,7 @@
 		BB0000000000000000000024 /* PairingCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingCrypto.swift; sourceTree = "<group>"; };
 		BB0000000000000000000025 /* AdbTLSTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdbTLSTransport.swift; sourceTree = "<group>"; };
 		BB0000000000000000000026 /* AdbIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdbIdentity.swift; sourceTree = "<group>"; };
+		BB0000000000000000000028 /* ProcessListViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessListViewController.swift; sourceTree = "<group>"; };
 		BB0000000000000000000027 /* PairingClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -128,6 +130,7 @@
 				BB0000000000000000000025 /* AdbTLSTransport.swift */,
 				BB0000000000000000000026 /* AdbIdentity.swift */,
 				BB0000000000000000000027 /* PairingClient.swift */,
+				BB0000000000000000000028 /* ProcessListViewController.swift */,
 				BB0000000000000000000003 /* LaunchScreen.storyboard */,
 				BB0000000000000000000004 /* Info.plist */,
 			);
@@ -241,6 +244,7 @@
 				AA0000000000000000000025 /* AdbTLSTransport.swift in Sources */,
 				AA0000000000000000000026 /* AdbIdentity.swift in Sources */,
 				AA0000000000000000000027 /* PairingClient.swift in Sources */,
+				AA0000000000000000000028 /* ProcessListViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -296,7 +300,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdbWebCast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -304,7 +308,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.8.1;
+				MARKETING_VERSION = 3.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cool.cnb.adbweb.console;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -318,7 +322,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdbWebCast/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
@@ -326,7 +330,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.8.1;
+				MARKETING_VERSION = 3.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = cool.cnb.adbweb.console;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

@@ -57,6 +57,12 @@ final class HealthViewController: UIViewController {
     private var pendingRecords: [HealthRecord] = []
     private var lastAlert: [String: Date] = [:]
     private var lastTemp: Double?
+    private var procTimer: Timer?
+    private var procSampling = false
+    private var procIcons: [String: UIImage] = [:]
+    private var procNames: [String: String] = [:]
+    private var procResolverBusy = false
+    private var lastProcSample: ProcessSample?
 
     private let scroll = UIScrollView()
     private let stack: UIStackView = {
@@ -77,6 +83,13 @@ final class HealthViewController: UIViewController {
     }()
     private let storageStack: UIStackView = {
         let s = UIStackView(); s.axis = .vertical; s.spacing = 6; return s
+    }()
+    private let processStack: UIStackView = {
+        let s = UIStackView(); s.axis = .vertical; s.spacing = 6; return s
+    }()
+    private let processHead: UILabel = {
+        let l = UILabel(); l.text = "正在采集进程…"; l.font = .systemFont(ofSize: 12)
+        l.textColor = .secondaryLabel; return l
     }()
     private let pauseButton: UIButton = {
         let b = UIButton(type: .system); b.setTitle("暂停", for: .normal)
@@ -120,6 +133,7 @@ final class HealthViewController: UIViewController {
         stack.addArrangedSubview(controls)
         stack.addArrangedSubview(card(title: "CPU 使用率 %", chart: cpuChart, caption: cpuLabel))
         stack.addArrangedSubview(card(title: "内存使用率 %", chart: memChart, caption: memLabel))
+        stack.addArrangedSubview(processCard())
         stack.addArrangedSubview(sectionCard(title: "存储", body: storageStack))
         stack.addArrangedSubview(infoLabel)
         stack.addArrangedSubview(sectionCard(title: "网络测速", body: netLabel))
@@ -148,14 +162,137 @@ final class HealthViewController: UIViewController {
             self?.sample()
         }
         sample()
+        procTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak self] _ in
+            self?.fetchProcesses()
+        }
+        fetchProcesses()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         sampleTimer?.invalidate(); sampleTimer = nil
+        procTimer?.invalidate(); procTimer = nil
         flushHistory()
     }
-    deinit { sampleTimer?.invalidate() }
+    deinit { sampleTimer?.invalidate(); procTimer?.invalidate() }
+
+    // MARK: 进程占用卡片
+
+    private func processCard() -> UIView {
+        let box = UIStackView(); box.axis = .vertical; box.spacing = 6
+        let head = UIStackView(); head.axis = .horizontal; head.spacing = 8; head.alignment = .center
+        let title = UILabel(); title.text = "进程占用 TOP"; title.font = .systemFont(ofSize: 15, weight: .semibold)
+        let all = UIButton(type: .system); all.setTitle("全部进程", for: .normal)
+        all.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+        all.accessibilityLabel = "查看全部进程列表"
+        all.addTarget(self, action: #selector(openProcesses), for: .touchUpInside)
+        head.addArrangedSubview(title); head.addArrangedSubview(processHead)
+        let spacer = UIView(); head.addArrangedSubview(spacer); head.addArrangedSubview(all)
+        box.addArrangedSubview(head); box.addArrangedSubview(processStack)
+        return wrapCard(box)
+    }
+
+    @objc private func openProcesses() {
+        navigationController?.pushViewController(ProcessListViewController(host: host), animated: true)
+    }
+
+    private func fetchProcesses() {
+        guard !procSampling else { return }
+        procSampling = true
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            let s = (try? ProcessProbe.fetch(ip: self.host.ip, port: self.host.port)) ?? nil
+            DispatchQueue.main.async {
+                self.procSampling = false
+                if let s {
+                    self.lastProcSample = s
+                    self.applyProcesses(s)
+                    self.resolveProcIcons(s)
+                } else {
+                    self.applyProcesses(nil)
+                }
+            }
+        }
+    }
+
+    private func applyProcesses(_ s: ProcessSample?) {
+        processStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard let s, !s.procs.isEmpty else {
+            processHead.text = "采集失败"
+            let empty = UILabel(); empty.text = "无法读取进程列表，请确认设备已授权 ADB"
+            empty.font = .systemFont(ofSize: 12); empty.textColor = .secondaryLabel
+            processStack.addArrangedSubview(empty)
+            return
+        }
+        processHead.text = String(format: "共 %d 进程 · 运行 %d", s.totalTasks, s.running)
+        for p in s.procs.prefix(8) {
+            let line = UIStackView(); line.axis = .horizontal; line.spacing = 8; line.alignment = .center
+            let imgView = UIImageView(frame: CGRect(x: 0, y: 0, width: 24, height: 24))
+            imgView.contentMode = .scaleAspectFit
+            let image: UIImage?
+            if let pkg = p.pkg {
+                image = procIcons[pkg] ?? AppLabelResolver.cachedIcon(pkg: pkg).flatMap { UIImage(data: $0) }
+            } else if p.isApp {
+                image = UIImage(systemName: "app")
+            } else {
+                image = UIImage(systemName: "gearshape.2")
+            }
+            imgView.image = image?.withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
+            imgView.isAccessibilityElement = true
+            imgView.accessibilityLabel = "进程图标"
+            let name = UILabel(); name.font = .systemFont(ofSize: 13)
+            name.text = displayName(for: p)
+            name.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let mem = ByteCountFormatter.string(fromByteCount: p.memBytes, countStyle: .memory)
+            let val = UILabel(); val.font = .systemFont(ofSize: 12, weight: .medium)
+            val.text = String(format: "%.1f%% · %@", p.cpu, mem)
+            val.textColor = p.cpu >= 30 ? .systemRed : .secondaryLabel
+            val.setContentHuggingPriority(.required, for: .horizontal)
+            val.setContentCompressionResistancePriority(.required, for: .horizontal)
+            line.addArrangedSubview(imgView); line.addArrangedSubview(name); line.addArrangedSubview(val)
+            line.isAccessibilityElement = true
+            line.accessibilityLabel = "\(displayName(for: p))，CPU \(Int(p.cpu))%，内存 \(mem)"
+            processStack.addArrangedSubview(line)
+        }
+    }
+
+    private func displayName(for p: ProcessSample.Proc) -> String {
+        if let pkg = p.pkg {
+            if let n = procNames[pkg] { return n }
+            if let n = AppLabelResolver.cachedLabel(pkg: pkg, apkPath: "") { return n }
+        }
+        return p.args.isEmpty ? p.user : p.args
+    }
+
+    /// 后台解析未缓存的应用图标/中文名（每包独立连接，解析完回主线程刷新）
+    private func resolveProcIcons(_ s: ProcessSample) {
+        guard !procResolverBusy else { return }
+        let pending = Array(Set(s.procs.compactMap { $0.pkg }).filter {
+            procIcons[$0] == nil && !AppLabelResolver.isResolved(pkg: $0)
+        })
+        guard !pending.isEmpty else { return }
+        procResolverBusy = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            for pkg in pending {
+                let client = AdbClient()
+                do {
+                    try client.connect(host: self.host.ip, port: self.host.port)
+                    let assets = AppLabelResolver.assets(for: pkg, apkPath: "", client: client)
+                    client.disconnect()
+                    DispatchQueue.main.async {
+                        if let label = assets.label { self.procNames[pkg] = label }
+                        if let data = assets.iconData { self.procIcons[pkg] = UIImage(data: data) }
+                        self.procResolverBusy = false
+                        self.applyProcesses(self.lastProcSample ?? s)
+                    }
+                } catch {
+                    client.disconnect()
+                }
+            }
+            DispatchQueue.main.async { self.procResolverBusy = false }
+        }
+    }
 
     private func card(title: String, chart: UIView, caption: UILabel) -> UIView {
         let box = UIStackView(); box.axis = .vertical; box.spacing = 6
