@@ -265,10 +265,11 @@ final class DeviceListViewController: UIViewController {
             message: "请保持电视的配对弹窗处于打开状态（最多 10 秒）", preferredStyle: .alert)
         present(hud, animated: true)
         var done = false
-        let browser = AdbPairingBrowser { [weak self, weak hud] ip, port in
+        var pairingBrowser: AdbPairingBrowser?
+        pairingBrowser = AdbPairingBrowser { [weak self, weak hud, weak pairingBrowser] ip, port in
             guard !done else { return }
             done = true
-            browser.stop()
+            pairingBrowser?.stop()
             DispatchQueue.main.async {
                 hud?.dismiss(animated: true) {
                     alert?.textFields?[0].text = ip
@@ -277,6 +278,7 @@ final class DeviceListViewController: UIViewController {
                 }
             }
         }
+        let browser = pairingBrowser!
         browser.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self, weak hud] in
             if !done {
@@ -322,14 +324,16 @@ final class DeviceListViewController: UIViewController {
             message: "设备 GUID：\(guid)\n正在查找无线调试端口…", preferredStyle: .alert)
         present(hud, animated: true)
         var done = false
-        let browser = AdbBonjourBrowser(serviceTypes: ["_adb-tls-connect._tcp."]) { [weak self, weak hud] foundIp, foundPort, _ in
+        var tlsBrowser: AdbBonjourBrowser?
+        tlsBrowser = AdbBonjourBrowser(serviceTypes: ["_adb-tls-connect._tcp."]) { [weak self, weak hud, weak tlsBrowser] foundIp, foundPort, _ in
             guard foundIp == ip, !done else { return }
             done = true
-            browser.stop()
+            tlsBrowser?.stop()
             DispatchQueue.main.async {
                 self?.connectAfterPairing(ip: foundIp, port: foundPort, guid: guid, hud: hud)
             }
         }
+        let browser = tlsBrowser!
         browser.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self, weak hud] in
             if !done {
